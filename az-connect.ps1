@@ -22,6 +22,7 @@ if ($subscription.count -lt 2){         ## See if there are multiple subscriptio
 }
 else {
     # More than one subscription, set the first one as current
+    write-host -foregroundcolor green "Multiple subscriptions detected. Selecting first to with"
     Set-AzureRmContext -SubscriptionID $subscription.Id[0]
     ## Select-AzureSubscription  -SubscriptionID $subscription.Id[0] –Default     
 }
