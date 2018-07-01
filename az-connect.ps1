@@ -9,6 +9,7 @@
 ## Module = https://www.powershellgallery.com/packages/AzureRM/
 ## Latest version 6.3.0 June 2018
 Import-module azurerm
+write-host -foregroundcolor green "Azure PowerShell module loaded"
 
 Login-azurermaccount
 
