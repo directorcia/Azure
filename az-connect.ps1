@@ -12,7 +12,10 @@ Login-azurermaccount
 
 ## Select ARM account
 $subscription=get-azurermsubscription
-$subscriptionname = $subscription.name[0]   ## Select first listed Azure subscription
+## determine if there multiple subscriptions
+## if not then select just that one
+## if so select the first one
 
-Select-azurermsubscription -subscriptionname $subscriptionname
+Set-AzureRmContext -SubscriptionID $subscription.Id[0]  ## select first subscription available
+
 write-host -foregroundcolor green "Now connected to Azure"
