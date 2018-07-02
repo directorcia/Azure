@@ -8,12 +8,18 @@
 ## ensure that update-azurerm msonline has been run to get latest module
 ## Module = https://www.powershellgallery.com/packages/AzureRM/
 ## Latest version 6.3.0 June 2018
+
+Clear-Host
+
+write-host -foregroundcolor green "Script started"
+
 Import-module azurerm
 write-host -foregroundcolor green "Azure PowerShell module loaded"
 
 Login-azurermaccount
 
 ## Select ARM account
+
 $subscription=get-azurermsubscription
 
 if ($subscription.count -lt 2){         ## See if there are multiple subscriptions in tenant
@@ -22,7 +28,8 @@ if ($subscription.count -lt 2){         ## See if there are multiple subscriptio
 }
 else {
     # More than one subscription, set the first one as current
-    write-host -foregroundcolor green "Multiple subscriptions detected. Selecting first to work with"
+    write-host -foregroundcolor green $subscription.count,"subscriptions detected."
+    write-host -foregroundcolor yellow "Selecting subscription = ", $subscription.name[0]
     Set-AzureRmContext -SubscriptionID $subscription.Id[0]
     ## Select-AzureSubscription  -SubscriptionID $subscription.Id[0] –Default     
 }
