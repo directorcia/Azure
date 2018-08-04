@@ -1,6 +1,9 @@
 ## CIAOPS
 ## Script provided as is. Use at own risk. No guarantees or warranty provided.
 
+## Description
+## Script designed to login to Azure resources
+
 ## Prerequisites = 1
 ## 1. Ensure azurerm module installed or updated
 
