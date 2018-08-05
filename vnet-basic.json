@@ -3,27 +3,33 @@
     "contentVersion": "1.0.0.0",
     "parameters": {
         "name": {
+            "type": "string",
             "value": "demo-vnet"
         },
         "location": {
+            "type": "string",
             "value": "australiaeast"
         },
         "addressPrefix": {
+            "type": "string",
             "value": "10.1.0.0/16"
         },
         "subnetName": {
+            "type": "string",
             "value": "Subnet"
         },
         "subnetAddressPrefix": {
+            "type": "string",
             "value": "10.1.0.0/24"
         },
         "enableDdosProtection": {
+            "type": "bool",
             "value": "false"
         }
     },
     "resources": [
         {
-            "apiVersion": "2018-04-01",
+            "apiVersion": "2017-06-01",
             "name": "[parameters('name')]",
             "type": "Microsoft.Network/virtualNetworks",
             "location": "[parameters('location')]",
