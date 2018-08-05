@@ -4,27 +4,27 @@
     "parameters": {
         "name": {
             "type": "string",
-            "value": "demo-vnet"
+            "defaultvalue": "demo-vnet"
         },
         "location": {
             "type": "string",
-            "value": "australiaeast"
+            "defaultvalue": "australiaeast"
         },
         "addressPrefix": {
             "type": "string",
-            "value": "10.1.0.0/16"
+            "defaultvalue": "10.1.0.0/16"
         },
         "subnetName": {
             "type": "string",
-            "value": "Subnet"
+            "defaultvalue": "Subnet"
         },
         "subnetAddressPrefix": {
             "type": "string",
-            "value": "10.1.0.0/24"
+            "defaultvalue": "10.1.0.0/24"
         },
         "enableDdosProtection": {
             "type": "bool",
-            "value": "false"
+            "defaultvalue": "false"
         }
     },
     "resources": [
