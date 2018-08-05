@@ -1,0 +1,25 @@
+{
+    "name": "string",
+    "type": "Microsoft.Network/publicIPAddresses",
+    "apiVersion": "2017-10-01",
+    "location": "string",
+    "tags": {},
+    "sku": {
+      "name": "string"
+    },
+    "properties": {
+      "publicIPAllocationMethod": "string",
+      "publicIPAddressVersion": "string",
+      "dnsSettings": {
+        "domainNameLabel": "string",
+        "fqdn": "string",
+        "reverseFqdn": "string"
+      },
+      "ipAddress": "string",
+      "idleTimeoutInMinutes": "integer",
+      "resourceGuid": "string"
+    },
+    "zones": [
+      "string"
+    ]
+  }

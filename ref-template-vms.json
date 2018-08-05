@@ -1,0 +1,161 @@
+{
+    "name": "string",
+    "type": "Microsoft.Compute/virtualMachines",
+    "apiVersion": "2018-06-01",
+    "location": "string",
+    "tags": {},
+    "plan": {
+      "name": "string",
+      "publisher": "string",
+      "product": "string",
+      "promotionCode": "string"
+    },
+    "properties": {
+      "hardwareProfile": {
+        "vmSize": "string"
+      },
+      "storageProfile": {
+        "imageReference": {
+          "id": "string",
+          "publisher": "string",
+          "offer": "string",
+          "sku": "string",
+          "version": "string"
+        },
+        "osDisk": {
+          "osType": "string",
+          "encryptionSettings": {
+            "diskEncryptionKey": {
+              "secretUrl": "string",
+              "sourceVault": {
+                "id": "string"
+              }
+            },
+            "keyEncryptionKey": {
+              "keyUrl": "string",
+              "sourceVault": {
+                "id": "string"
+              }
+            },
+            "enabled": boolean
+          },
+          "name": "string",
+          "vhd": {
+            "uri": "string"
+          },
+          "image": {
+            "uri": "string"
+          },
+          "caching": "string",
+          "writeAcceleratorEnabled": boolean,
+          "createOption": "string",
+          "diskSizeGB": "integer",
+          "managedDisk": {
+            "id": "string",
+            "storageAccountType": "string"
+          }
+        },
+        "dataDisks": [
+          {
+            "lun": "integer",
+            "name": "string",
+            "vhd": {
+              "uri": "string"
+            },
+            "image": {
+              "uri": "string"
+            },
+            "caching": "string",
+            "writeAcceleratorEnabled": boolean,
+            "createOption": "string",
+            "diskSizeGB": "integer",
+            "managedDisk": {
+              "id": "string",
+              "storageAccountType": "string"
+            }
+          }
+        ]
+      },
+      "osProfile": {
+        "computerName": "string",
+        "adminUsername": "string",
+        "adminPassword": "string",
+        "customData": "string",
+        "windowsConfiguration": {
+          "provisionVMAgent": boolean,
+          "enableAutomaticUpdates": boolean,
+          "timeZone": "string",
+          "additionalUnattendContent": [
+            {
+              "passName": "OobeSystem",
+              "componentName": "Microsoft-Windows-Shell-Setup",
+              "settingName": "string",
+              "content": "string"
+            }
+          ],
+          "winRM": {
+            "listeners": [
+              {
+                "protocol": "string",
+                "certificateUrl": "string"
+              }
+            ]
+          }
+        },
+        "linuxConfiguration": {
+          "disablePasswordAuthentication": boolean,
+          "ssh": {
+            "publicKeys": [
+              {
+                "path": "string",
+                "keyData": "string"
+              }
+            ]
+          },
+          "provisionVMAgent": boolean
+        },
+        "secrets": [
+          {
+            "sourceVault": {
+              "id": "string"
+            },
+            "vaultCertificates": [
+              {
+                "certificateUrl": "string",
+                "certificateStore": "string"
+              }
+            ]
+          }
+        ],
+        "allowExtensionOperations": boolean
+      },
+      "networkProfile": {
+        "networkInterfaces": [
+          {
+            "id": "string",
+            "properties": {
+              "primary": boolean
+            }
+          }
+        ]
+      },
+      "diagnosticsProfile": {
+        "bootDiagnostics": {
+          "enabled": boolean,
+          "storageUri": "string"
+        }
+      },
+      "availabilitySet": {
+        "id": "string"
+      },
+      "licenseType": "string"
+    },
+    "identity": {
+      "type": "string",
+      "userAssignedIdentities": {}
+    },
+    "zones": [
+      "string"
+    ],
+    "resources": []
+  }

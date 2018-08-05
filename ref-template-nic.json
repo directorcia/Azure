@@ -1,0 +1,353 @@
+{
+    "name": "string",
+    "type": "Microsoft.Network/networkInterfaces",
+    "apiVersion": "2017-10-01",
+    "location": "string",
+    "tags": {},
+    "properties": {
+      "virtualMachine": {
+        "id": "string"
+      },
+      "networkSecurityGroup": {
+        "id": "string",
+        "location": "string",
+        "tags": {},
+        "properties": {
+          "securityRules": [
+            {
+              "id": "string",
+              "properties": {
+                "description": "string",
+                "protocol": "string",
+                "sourcePortRange": "string",
+                "destinationPortRange": "string",
+                "sourceAddressPrefix": "string",
+                "sourceAddressPrefixes": [
+                  "string"
+                ],
+                "sourceApplicationSecurityGroups": [
+                  {
+                    "id": "string",
+                    "location": "string",
+                    "tags": {},
+                    "properties": {}
+                  }
+                ],
+                "destinationAddressPrefix": "string",
+                "destinationAddressPrefixes": [
+                  "string"
+                ],
+                "destinationApplicationSecurityGroups": [
+                  {
+                    "id": "string",
+                    "location": "string",
+                    "tags": {},
+                    "properties": {}
+                  }
+                ],
+                "sourcePortRanges": [
+                  "string"
+                ],
+                "destinationPortRanges": [
+                  "string"
+                ],
+                "access": "string",
+                "priority": "integer",
+                "direction": "string",
+              },
+              "name": "string"
+            }
+          ],
+          "defaultSecurityRules": [
+            {
+              "id": "string",
+              "properties": {
+                "description": "string",
+                "protocol": "string",
+                "sourcePortRange": "string",
+                "destinationPortRange": "string",
+                "sourceAddressPrefix": "string",
+                "sourceAddressPrefixes": [
+                  "string"
+                ],
+                "sourceApplicationSecurityGroups": [
+                  {
+                    "id": "string",
+                    "location": "string",
+                    "tags": {},
+                    "properties": {}
+                  }
+                ],
+                "destinationAddressPrefix": "string",
+                "destinationAddressPrefixes": [
+                  "string"
+                ],
+                "destinationApplicationSecurityGroups": [
+                  {
+                    "id": "string",
+                    "location": "string",
+                    "tags": {},
+                    "properties": {}
+                  }
+                ],
+                "sourcePortRanges": [
+                  "string"
+                ],
+                "destinationPortRanges": [
+                  "string"
+                ],
+                "access": "string",
+                "priority": "integer",
+                "direction": "string"
+              },
+              "name": "string"
+            }
+          ],
+          "resourceGuid": "string"
+        }
+      },
+      "ipConfigurations": [
+        {
+          "id": "string",
+          "properties": {
+            "applicationGatewayBackendAddressPools": [
+              {
+                "id": "string",
+                "properties": {
+                  "backendIPConfigurations": [
+                    "NetworkInterfaceIPConfiguration"
+                  ],
+                  "backendAddresses": [
+                    {
+                      "fqdn": "string",
+                      "ipAddress": "string"
+                    }
+                  ]
+                },
+                "name": "string",
+                "type": "string"
+              }
+            ],
+            "loadBalancerBackendAddressPools": [
+              {
+                "id": "string",
+                "properties": {
+                },
+                "name": "string"
+              }
+            ],
+            "loadBalancerInboundNatRules": [
+              {
+                "id": "string",
+                "properties": {
+                  "frontendIPConfiguration": {
+                    "id": "string"
+                  },
+                  "protocol": "string",
+                  "frontendPort": "integer",
+                  "backendPort": "integer",
+                  "idleTimeoutInMinutes": "integer",
+                  "enableFloatingIP": boolean
+                },
+                "name": "string"
+              }
+            ],
+            "privateIPAddress": "string",
+            "privateIPAllocationMethod": "string",
+            "privateIPAddressVersion": "string",
+            "subnet": {
+              "id": "string",
+              "properties": {
+                "addressPrefix": "string",
+                "networkSecurityGroup": {
+                  "id": "string",
+                  "location": "string",
+                  "tags": {},
+                  "properties": {
+                    "securityRules": [
+                      {
+                        "id": "string",
+                        "properties": {
+                          "description": "string",
+                          "protocol": "string",
+                          "sourcePortRange": "string",
+                          "destinationPortRange": "string",
+                          "sourceAddressPrefix": "string",
+                          "sourceAddressPrefixes": [
+                            "string"
+                          ],
+                          "sourceApplicationSecurityGroups": [
+                            {
+                              "id": "string",
+                              "location": "string",
+                              "tags": {},
+                              "properties": {}
+                            }
+                          ],
+                          "destinationAddressPrefix": "string",
+                          "destinationAddressPrefixes": [
+                            "string"
+                          ],
+                          "destinationApplicationSecurityGroups": [
+                            {
+                              "id": "string",
+                              "location": "string",
+                              "tags": {},
+                              "properties": {}
+                            }
+                          ],
+                          "sourcePortRanges": [
+                            "string"
+                          ],
+                          "destinationPortRanges": [
+                            "string"
+                          ],
+                          "access": "string",
+                          "priority": "integer",
+                          "direction": "string"
+                        },
+                        "name": "string"
+                      }
+                    ],
+                    "defaultSecurityRules": [
+                      {
+                        "id": "string",
+                        "properties": {
+                          "description": "string",
+                          "protocol": "string",
+                          "sourcePortRange": "string",
+                          "destinationPortRange": "string",
+                          "sourceAddressPrefix": "string",
+                          "sourceAddressPrefixes": [
+                            "string"
+                          ],
+                          "sourceApplicationSecurityGroups": [
+                            {
+                              "id": "string",
+                              "location": "string",
+                              "tags": {},
+                              "properties": {}
+                            }
+                          ],
+                          "destinationAddressPrefix": "string",
+                          "destinationAddressPrefixes": [
+                            "string"
+                          ],
+                          "destinationApplicationSecurityGroups": [
+                            {
+                              "id": "string",
+                              "location": "string",
+                              "tags": {},
+                              "properties": {}
+                            }
+                          ],
+                          "sourcePortRanges": [
+                            "string"
+                          ],
+                          "destinationPortRanges": [
+                            "string"
+                          ],
+                          "access": "string",
+                          "priority": "integer",
+                          "direction": "string"
+                        },
+                        "name": "string"
+                      }
+                    ],
+                    "resourceGuid": "string"
+                  }
+                },
+                "routeTable": {
+                  "id": "string",
+                  "location": "string",
+                  "tags": {},
+                  "properties": {
+                    "routes": [
+                      {
+                        "id": "string",
+                        "properties": {
+                          "addressPrefix": "string",
+                          "nextHopType": "string",
+                          "nextHopIpAddress": "string"
+                        },
+                        "name": "string"
+                      }
+                    ],
+                    "disableBgpRoutePropagation": boolean
+                  }
+                },
+                "serviceEndpoints": [
+                  {
+                    "service": "string",
+                    "locations": [
+                      "string"
+                    ]
+                  }
+                ],
+                "resourceNavigationLinks": [
+                  {
+                    "id": "string",
+                    "properties": {
+                      "linkedResourceType": "string",
+                      "link": "string"
+                    },
+                    "name": "string"
+                  }
+                ]
+              },
+              "name": "string"
+            },
+            "primary": boolean,
+            "publicIPAddress": {
+              "id": "string",
+              "location": "string",
+              "tags": {},
+              "sku": {
+                "name": "string"
+              },
+              "properties": {
+                "publicIPAllocationMethod": "string",
+                "publicIPAddressVersion": "string",
+                "dnsSettings": {
+                  "domainNameLabel": "string",
+                  "fqdn": "string",
+                  "reverseFqdn": "string"
+                },
+                "ipAddress": "string",
+                "idleTimeoutInMinutes": "integer",
+                "resourceGuid": "string"
+              },
+              "zones": [
+                "string"
+              ]
+            },
+            "applicationSecurityGroups": [
+              {
+                "id": "string",
+                "location": "string",
+                "tags": {},
+                "properties": {}
+              }
+            ]
+          },
+          "name": "string"
+        }
+      ],
+      "dnsSettings": {
+        "dnsServers": [
+          "string"
+        ],
+        "appliedDnsServers": [
+          "string"
+        ],
+        "internalDnsNameLabel": "string",
+        "internalFqdn": "string",
+        "internalDomainNameSuffix": "string"
+      },
+      "macAddress": "string",
+      "primary": boolean,
+      "enableAcceleratedNetworking": boolean,
+      "enableIPForwarding": boolean,
+      "resourceGuid": "string"
+    }
+  }

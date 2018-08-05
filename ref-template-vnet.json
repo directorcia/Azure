@@ -1,0 +1,189 @@
+{
+    "name": "string",
+    "type": "Microsoft.Network/virtualNetworks",
+    "apiVersion": "2017-10-01",
+    "location": "string",
+    "tags": {},
+    "properties": {
+      "addressSpace": {
+        "addressPrefixes": [
+          "string"
+        ]
+      },
+      "dhcpOptions": {
+        "dnsServers": [
+          "string"
+        ]
+      },
+      "subnets": [
+        {
+          "id": "string",
+          "properties": {
+            "addressPrefix": "string",
+            "networkSecurityGroup": {
+              "id": "string",
+              "location": "string",
+              "tags": {},
+              "properties": {
+                "securityRules": [
+                  {
+                    "id": "string",
+                    "properties": {
+                      "description": "string",
+                      "protocol": "string",
+                      "sourcePortRange": "string",
+                      "destinationPortRange": "string",
+                      "sourceAddressPrefix": "string",
+                      "sourceAddressPrefixes": [
+                        "string"
+                      ],
+                      "sourceApplicationSecurityGroups": [
+                        {
+                          "id": "string",
+                          "location": "string",
+                          "tags": {},
+                          "properties": {}
+                        }
+                      ],
+                      "destinationAddressPrefix": "string",
+                      "destinationAddressPrefixes": [
+                        "string"
+                      ],
+                      "destinationApplicationSecurityGroups": [
+                        {
+                          "id": "string",
+                          "location": "string",
+                          "tags": {},
+                          "properties": {}
+                        }
+                      ],
+                      "sourcePortRanges": [
+                        "string"
+                      ],
+                      "destinationPortRanges": [
+                        "string"
+                      ],
+                      "access": "string",
+                      "priority": "integer",
+                      "direction": "string"
+                    },
+                    "name": "string"
+                  }
+                ],
+                "defaultSecurityRules": [
+                  {
+                    "id": "string",
+                    "properties": {
+                      "description": "string",
+                      "protocol": "string",
+                      "sourcePortRange": "string",
+                      "destinationPortRange": "string",
+                      "sourceAddressPrefix": "string",
+                      "sourceAddressPrefixes": [
+                        "string"
+                      ],
+                      "sourceApplicationSecurityGroups": [
+                        {
+                          "id": "string",
+                          "location": "string",
+                          "tags": {},
+                          "properties": {}
+                        }
+                      ],
+                      "destinationAddressPrefix": "string",
+                      "destinationAddressPrefixes": [
+                        "string"
+                      ],
+                      "destinationApplicationSecurityGroups": [
+                        {
+                          "id": "string",
+                          "location": "string",
+                          "tags": {},
+                          "properties": {}
+                        }
+                      ],
+                      "sourcePortRanges": [
+                        "string"
+                      ],
+                      "destinationPortRanges": [
+                        "string"
+                      ],
+                      "access": "string",
+                      "priority": "integer",
+                      "direction": "string"
+                    },
+                    "name": "string"
+                  }
+                ],
+                "resourceGuid": "string"
+              }
+            },
+            "routeTable": {
+              "id": "string",
+              "location": "string",
+              "tags": {},
+              "properties": {
+                "routes": [
+                  {
+                    "id": "string",
+                    "properties": {
+                      "addressPrefix": "string",
+                      "nextHopType": "string",
+                      "nextHopIpAddress": "string"
+                    },
+                    "name": "string"
+                  }
+                ],
+                "disableBgpRoutePropagation": boolean
+              }
+            },
+            "serviceEndpoints": [
+              {
+                "service": "string",
+                "locations": [
+                  "string"
+                ]
+              }
+            ],
+            "resourceNavigationLinks": [
+              {
+                "id": "string",
+                "properties": {
+                  "linkedResourceType": "string",
+                  "link": "string"
+                },
+                "name": "string"
+              }
+            ]
+          },
+          "name": "string"
+        }
+      ],
+      "virtualNetworkPeerings": [
+        {
+          "id": "string",
+          "properties": {
+            "allowVirtualNetworkAccess": boolean,
+            "allowForwardedTraffic": boolean,
+            "allowGatewayTransit": boolean,
+            "useRemoteGateways": boolean,
+            "remoteVirtualNetwork": {
+              "id": "string"
+            },
+            "remoteAddressSpace": {
+              "addressPrefixes": [
+                "string"
+              ]
+            },
+            "peeringState": "string"
+          },
+          "name": "string"
+        }
+      ],
+      "resourceGuid": "string",
+      "enableDdosProtection": boolean,
+      "enableVmProtection": boolean
+    },
+    "resources": [
+    ]
+  }

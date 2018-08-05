@@ -1,0 +1,102 @@
+{
+    "name": "string",
+    "type": "Microsoft.Network/networkSecurityGroups",
+    "apiVersion": "2017-10-01",
+    "location": "string",
+    "tags": {},
+    "properties": {
+      "securityRules": [
+        {
+          "id": "string",
+          "properties": {
+            "description": "string",
+            "protocol": "string",
+            "sourcePortRange": "string",
+            "destinationPortRange": "string",
+            "sourceAddressPrefix": "string",
+            "sourceAddressPrefixes": [
+              "string"
+            ],
+            "sourceApplicationSecurityGroups": [
+              {
+                "id": "string",
+                "location": "string",
+                "tags": {},
+                "properties": {}
+              }
+            ],
+            "destinationAddressPrefix": "string",
+            "destinationAddressPrefixes": [
+              "string"
+            ],
+            "destinationApplicationSecurityGroups": [
+              {
+                "id": "string",
+                "location": "string",
+                "tags": {},
+                "properties": {}
+              }
+            ],
+            "sourcePortRanges": [
+              "string"
+            ],
+            "destinationPortRanges": [
+              "string"
+            ],
+            "access": "string",
+            "priority": "integer",
+            "direction": "string"
+          },
+          "name": "string"
+        }
+      ],
+      "defaultSecurityRules": [
+        {
+          "id": "string",
+          "properties": {
+            "description": "string",
+            "protocol": "string",
+            "sourcePortRange": "string",
+            "destinationPortRange": "string",
+            "sourceAddressPrefix": "string",
+            "sourceAddressPrefixes": [
+              "string"
+            ],
+            "sourceApplicationSecurityGroups": [
+              {
+                "id": "string",
+                "location": "string",
+                "tags": {},
+                "properties": {}
+              }
+            ],
+            "destinationAddressPrefix": "string",
+            "destinationAddressPrefixes": [
+              "string"
+            ],
+            "destinationApplicationSecurityGroups": [
+              {
+                "id": "string",
+                "location": "string",
+                "tags": {},
+                "properties": {}
+              }
+            ],
+            "sourcePortRanges": [
+              "string"
+            ],
+            "destinationPortRanges": [
+              "string"
+            ],
+            "access": "string",
+            "priority": "integer",
+            "direction": "string"
+          },
+          "name": "string"
+        }
+      ],
+      "resourceGuid": "string"
+    },
+    "resources": [
+    ]
+  }
