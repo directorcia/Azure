@@ -24,7 +24,7 @@
         },
         "enableDdosProtection": {
             "type": "bool",
-            "defaultvalue": "false"
+            "defaultvalue": false
         }
     },
     "variables":{}, 
