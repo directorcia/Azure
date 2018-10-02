@@ -10,7 +10,7 @@
 ## ensure that install-azurerm msonline has been run
 ## ensure that update-azurerm msonline has been run to get latest module
 ## Module = https://www.powershellgallery.com/packages/AzureRM/
-## Latest version 6.3.0 June 2018
+## Latest version 6.9.0 September 2018
 
 Clear-Host
 
