@@ -43,13 +43,13 @@ Clear-Host
 
 write-host -foregroundcolor $systemmessagecolor "Script started`n"
 
-Get-AzureRMVMImagePublisher -Location $location | Select PublisherName
+Get-AzureRMVMImagePublisher -Location $location | Select-Object PublisherName
 
 $pubName="MicrosoftWindowsServer"
-Get-AzureRMVMImageOffer -Location $location -Publisher $pubName | Select Offer
+Get-AzureRMVMImageOffer -Location $location -Publisher $pubName | Select-Object Offer
 
 $offerName="WindowsServer"
-Get-AzureRMVMImageSku -Location $location -Publisher $pubName -Offer $offerName | Select Skus
+Get-AzureRMVMImageSku -Location $location -Publisher $pubName -Offer $offerName | Select-Object Skus
 
 ### Create a new, empty Resource Group inside our Azure subscription.
 New-AzureRmResourceGroup -Name $rgname -Location $location -Force
