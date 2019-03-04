@@ -23,7 +23,7 @@ $errormessagecolor = "red"
 $warnmessagecolor = "yellow"
 
 $rgname = "demo1" ## new ARM resource group name
-$location = "southeastasia" ## Azure region where new VM will reside
+$location = "westus2" ## Azure region where new VM will reside
 $vnetiprange ="10.2.0.0/16" ## VNET IP network
 $vnetname="demo-net" ## new ARM VNET name
 $vnetsubnetname="subnet1" ## new ARM VNET subnet in which VM will live
@@ -33,9 +33,9 @@ $storageacctname ="demo1store" ## for VHDs. Note must be globally unique
 $nic_name="demo1_nic" ## for network card
 $storage_type="Standard_LRS" ## storage account type
 
-$vm_size="Standard_DS2_v2" ## VM size
+$vm_size="Standard_E4s_v3" ## VM size
 $dc_name="server" ## new VM name
-$os_sku="2008-R2-sp1" ## new VM OS
+$os_sku="2019-Datacenter" ## new VM OS
 $osdiskname="sposdisk" ## new VM VHD name
 $location="southeastasia"
 
