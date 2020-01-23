@@ -2,7 +2,7 @@
 Script provided as is. Use at own risk. No guarantees or warranty provided.
 
 Description - Change the tier l;evel of items inside an Azure storage account. The storage account will need to support those levels.
-Source - 
+Source - https://github.com/directorcia/Azure/blob/master/az-blob-tierset.ps1
 
 Source - https://github.com/directorcia/Office365/blob/master/graph-connect.ps1
 
