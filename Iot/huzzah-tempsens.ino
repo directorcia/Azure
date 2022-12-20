@@ -1,5 +1,7 @@
 #include <Adafruit_AHTX0.h>
 
+// Require library - Adafruit AHTX0
+
 // DHT20 pinouts
 // Pinout (left to right from the front):
 //	• VDD: Supply voltage
