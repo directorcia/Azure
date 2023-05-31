@@ -5,10 +5,10 @@
 #include <Adafruit_MQTT_Client.h>
 #define AIO_SERVER "io.adafruit.com"
 #define AIO_SERVERPORT 1883
-#define AIO_USERNAME "directorcia"
-#define AIO_KEY "aio_BMeM81iimlxqMjLhYLQjDDyMuUwy"
-#define WLAN_SSID "MrD"
-#define WLAN_PASS "dural2158"
+#define AIO_USERNAME "<Your Adafruit IO username>"
+#define AIO_KEY "<Your Adafruit IO key>"
+#define WLAN_SSID "<Your Wifi network>"
+#define WLAN_PASS "<Your WifI password>"
 
 WiFiClient client;
 
