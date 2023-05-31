@@ -10,7 +10,7 @@
 #define WLAN_SSID "<Your Wifi network>"
 #define WLAN_PASS "<Your WifI password>"
 
-WiFiClient client;
+WiFiClient client;      // declare variable
 
 // Setup the MQTT client class by passing in the WiFi client and MQTT server and login details.
 
