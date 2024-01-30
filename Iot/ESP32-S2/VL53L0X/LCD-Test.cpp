@@ -1,5 +1,6 @@
 // https://blog.ciaopslabs.com
 // Capture distance using the Adafruit VL53L0X sensor and display on an LCD as well as serial console
+// Tested with ESP32-S2 SparkFun Thing Plus WROOM
 
 #include "Adafruit_VL53L0X.h"   // Distance Sensor
 #include <LiquidCrystal_I2C.h>  // LCD display
