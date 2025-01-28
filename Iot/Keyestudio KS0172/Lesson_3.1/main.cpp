@@ -10,7 +10,7 @@
 volatile int buttonState;  //the state of the level output by the push button module
 void setup()
 {
-  Serial.begin(115000);//set baud rate to 9600
+  Serial.begin(115200);//set baud rate to 115200
   pinMode(button, INPUT);// initialize digital pin button as an input.
 }
 void loop () {
