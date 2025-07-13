@@ -2049,16 +2049,11 @@ bool initializeCameraForMode3() {
   }
 }
 
-void captureWithFullSensorInit() {
-  Serial.println("\n=== Full OV5642 Setup + Image Capture ===");
+void comprehensiveOV5642Init() {
+  Serial.println("=== Comprehensive OV5642 Sensor Initialization ===");
   
-  // Step 1: Complete sensor initialization
-  Serial.println("Step 1: Comprehensive sensor initialization...");
-  
-  // Initialize SPI with MODE3 settings
-  SPI.begin();
-  pinMode(CS_PIN, OUTPUT);
-  digitalWrite(CS_PIN, HIGH);
+  // Phase 1: Hardware reset and basic setup
+  Serial.println("Phase 1: Hardware preparation...");
   
   // Clear any previous state
   writeRegWithMode(ARDUCHIP_FIFO, 0x01, SPI_MODE3);  // Clear FIFO
@@ -2068,16 +2063,15 @@ void captureWithFullSensorInit() {
   writeRegWithMode(ARDUCHIP_MODE, 0x00, SPI_MODE3);  // Reset mode
   delay(500);  // Extended reset time
   
-  // Enable JPEG mode
-  Serial.println("Step 2: Enabling JPEG format...");
+  // Phase 2: Enable JPEG mode
+  Serial.println("Phase 2: Enabling JPEG format...");
   writeRegWithMode(ARDUCHIP_TIM, 0x01, SPI_MODE3);   // Enable JPEG
   delay(200);
   
-  // OV5642 sensor register configuration
-  Serial.println("Step 3: Configuring OV5642 registers...");
+  // Phase 3: Basic sensor configuration
+  Serial.println("Phase 3: Basic sensor setup...");
   
-  // Basic OV5642 initialization for JPEG mode
-  // These are ArduCAM-specific registers for OV5642 control
+  // Set JPEG format and quality
   writeRegWithMode(0x15, 0x00, SPI_MODE3);  // JPEG control register
   delay(50);
   writeRegWithMode(0x16, 0x24, SPI_MODE3);  // Clock settings
@@ -2095,12 +2089,33 @@ void captureWithFullSensorInit() {
   writeRegWithMode(0x1A, 0x40, SPI_MODE3);  // Format control
   delay(50);
   
-  // Wait for sensor stabilization
-  Serial.println("Step 4: Waiting for sensor stabilization...");
+  // Phase 4: Wait for sensor stabilization
+  Serial.println("Phase 4: Waiting for sensor stabilization...");
   delay(1000);
   
-  // Step 5: Clear FIFO and prepare for capture
-  Serial.println("Step 5: Preparing for capture...");
+  // Phase 5: Verify key registers
+  Serial.println("Phase 5: Verifying configuration...");
+  byte jpeg_enable = readRegWithMode(ARDUCHIP_TIM, SPI_MODE3);
+  Serial.print("JPEG mode register: 0x");
+  Serial.println(jpeg_enable, HEX);
+  
+  if (jpeg_enable & 0x01) {
+    Serial.println("✅ JPEG mode enabled successfully");
+  } else {
+    Serial.println("⚠️  JPEG mode may not be properly enabled");
+  }
+  
+  Serial.println("✅ Comprehensive OV5642 initialization complete");
+}
+
+void captureWithFullSensorInit() {
+  Serial.println("\n=== Full OV5642 Setup + Image Capture ===");
+  
+  // Step 1: Complete sensor initialization
+  comprehensiveOV5642Init();
+  
+  // Step 2: Clear FIFO and prepare for capture
+  Serial.println("\nStep 2: Preparing for capture...");
   writeRegWithMode(ARDUCHIP_FIFO, 0x01, SPI_MODE3);  // Clear FIFO
   delay(100);
   
@@ -2110,13 +2125,13 @@ void captureWithFullSensorInit() {
   Serial.print(initial_size);
   Serial.println(" bytes");
   
-  // Step 6: Trigger capture
-  Serial.println("Step 6: Triggering image capture...");
+  // Step 3: Trigger capture
+  Serial.println("Step 3: Triggering image capture...");
   writeRegWithMode(ARDUCHIP_MODE, 0x02, SPI_MODE3);  // Start capture
   delay(2000);  // Extended capture time for OV5642
   
-  // Step 7: Check capture completion
-  Serial.println("Step 7: Checking capture status...");
+  // Step 4: Check capture completion
+  Serial.println("Step 4: Checking capture status...");
   bool capture_done = false;
   
   for (int i = 0; i < 50; i++) {  // Extended timeout
@@ -2140,7 +2155,7 @@ void captureWithFullSensorInit() {
     Serial.println("⚠️  Capture may still be in progress or failed");
   }
   
-  // Step 8: Check FIFO size
+  // Step 5: Check FIFO size
   uint32_t final_size = readFIFOLength();
   Serial.print("Final FIFO size: ");
   Serial.print(final_size);
@@ -2149,8 +2164,8 @@ void captureWithFullSensorInit() {
   if (final_size > initial_size + 100) {
     Serial.println("✅ Image data detected in FIFO");
     
-    // Step 9: Read and check JPEG header
-    Serial.println("Step 9: Checking JPEG header...");
+    // Step 6: Read and check JPEG header
+    Serial.println("Step 6: Checking JPEG header...");
     
     writeRegWithMode(ARDUCHIP_FIFO, 0x00, SPI_MODE3);  // FIFO read mode
     delay(10);
