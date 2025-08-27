@@ -6,6 +6,10 @@ control
 For use with the Adafruit Motor Shield v2
 ----> http://www.adafruit.com/products/1438
 */
+
+// Source - https://github.com/directorcia/Azure/blob/master/Iot/Arduino%20Uno%20R4%20Wifi/Adafruit-IO/chassis-control.cpp
+// Documentation - https://github.com/directorcia/Azure/wiki/Arduino-Uno-R4-Wifi-Chassis-Control-Script
+
 #include <Adafruit_MotorShield.h>
 #include <Arduino.h>
 #include <SPI.h>
