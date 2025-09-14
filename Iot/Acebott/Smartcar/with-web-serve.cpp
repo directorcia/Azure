@@ -57,6 +57,24 @@ void playConnectedTune() {
   digitalWrite(BUZZER_PIN, LOW);
 }
 
+// Forward declarations for robot functions
+void moveLeft();
+void moveRight(); 
+void moveForward();
+void moveBackward();
+void stopRobot();
+void rotateLeft();
+void rotateRight();
+void servoLeft();
+void servoRight();
+void servoCenter();
+void toggleLED();
+void toggleBuzzer();
+void readUltrasonic();
+
+// Forward declaration for web handler
+void handleCommand();
+
 // ------------ Web Server -------------
 WebServer server(WEB_SERVER_PORT);
 
@@ -73,10 +91,25 @@ String formatUptime() {
 
 void handleRoot() {
   String html;
-  html.reserve(1024);
+  html.reserve(2048);
   html += F("<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>");
-  html += F("<title>Acebott Device Info</title><style>body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px}code{background:#f3f3f3;padding:2px 4px;border-radius:4px}</style></head><body>");
-  html += F("<h2>Acebott Device</h2><ul>");
+  html += F("<title>Acebott Robot Control</title>");
+  html += F("<style>");
+  html += F("body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:20px;background:#f5f5f5}");
+  html += F("code{background:#e0e0e0;padding:2px 4px;border-radius:4px}");
+  html += F(".container{max-width:600px;margin:0 auto;background:white;padding:20px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}");
+  html += F(".remote{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;max-width:300px;margin:20px auto}");
+  html += F(".btn{padding:15px;font-size:18px;border:none;border-radius:8px;cursor:pointer;background:#007acc;color:white;transition:background 0.2s}");
+  html += F(".btn:hover{background:#005a9e}.btn:active{background:#004080}");
+  html += F(".btn-danger{background:#dc3545}.btn-danger:hover{background:#c82333}");
+  html += F(".btn-success{background:#28a745}.btn-success:hover{background:#218838}");
+  html += F(".info{margin-bottom:20px}ul{list-style:none;padding:0}li{padding:5px 0;border-bottom:1px solid #eee}");
+  html += F("</style></head><body>");
+  html += F("<div class='container'>");
+  html += F("<h2>🤖 Acebott Robot Control</h2>");
+  
+  // Device info section
+  html += F("<div class='info'><h3>Device Status</h3><ul>");
   html += F("<li>Status: <b>"); html += (WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected"); html += F("</b></li>");
   html += F("<li>SSID: <code>"); html += (WiFi.status()==WL_CONNECTED ? WiFi.SSID() : String("-")); html += F("</code></li>");
   html += F("<li>IP: <code>"); html += WiFi.localIP().toString(); html += F("</code></li>");
@@ -86,9 +119,46 @@ void handleRoot() {
   html += F("<li>Hostname: <code>"); html += HOSTNAME; html += F("</code></li>");
 #endif
   html += F("<li>Uptime: <code>"); html += formatUptime(); html += F("</code></li>");
-  html += F("<li>Free heap: <code>"); html += String(ESP.getFreeHeap()); html += F(" bytes</code></li>");
-  html += F("<li>Chip: <code>"); html += String(ESP.getChipModel()); html += F(" rev "); html += String(ESP.getChipRevision()); html += F("</code></li>");
-  html += F("</ul><p>JSON endpoint: <a href='/status'><code>/status</code></a></p></body></html>");
+  html += F("</ul></div>");
+  
+  // Remote control section
+  html += F("<h3>Remote Control</h3>");
+  html += F("<div class='remote'>");
+  html += F("<div></div><button class='btn' onclick=\"cmd('forward')\">⬆️ Forward</button><div></div>");
+  html += F("<button class='btn' onclick=\"cmd('left')\">⬅️ Left</button>");
+  html += F("<button class='btn btn-danger' onclick=\"cmd('stop')\">⏹️ Stop</button>");
+  html += F("<button class='btn' onclick=\"cmd('right')\">➡️ Right</button>");
+  html += F("<div></div><button class='btn' onclick=\"cmd('backward')\">⬇️ Back</button><div></div>");
+  html += F("</div>");
+  
+  // Additional controls
+  html += F("<div style='margin:20px 0;text-align:center'>");
+  html += F("<button class='btn' onclick=\"cmd('rotleft')\">↶ Rotate L</button> ");
+  html += F("<button class='btn' onclick=\"cmd('rotright')\">↷ Rotate R</button>");
+  html += F("</div>");
+  
+  html += F("<div style='margin:20px 0;text-align:center'>");
+  html += F("<button class='btn' onclick=\"cmd('servoleft')\">📷⬅️ Servo L</button> ");
+  html += F("<button class='btn btn-success' onclick=\"cmd('servocenter')\">📷⚫ Center</button> ");
+  html += F("<button class='btn' onclick=\"cmd('servoright')\">📷➡️ Servo R</button>");
+  html += F("</div>");
+  
+  html += F("<div style='margin:20px 0;text-align:center'>");
+  html += F("<button class='btn' onclick=\"cmd('led')\">💡 LED</button> ");
+  html += F("<button class='btn' onclick=\"cmd('buzzer')\">🔊 Buzzer</button> ");
+  html += F("<button class='btn' onclick=\"cmd('distance')\">📏 Distance</button>");
+  html += F("</div>");
+  
+  html += F("<p><a href='/status'>JSON Status</a></p>");
+  
+  html += F("<script>");
+  html += F("function cmd(action){");
+  html += F("fetch('/cmd?action='+action).then(r=>r.text()).then(d=>{");
+  html += F("if(d.trim())alert('Response: '+d);");
+  html += F("}).catch(e=>alert('Error: '+e));}");
+  html += F("</script>");
+  
+  html += F("</div></body></html>");
   server.send(200, "text/html", html);
 }
 
@@ -122,6 +192,7 @@ void handleNotFound() {
 void startWebServer() {
   server.on("/", handleRoot);
   server.on("/status", handleStatusJson);
+  server.on("/cmd", handleCommand);
   server.onNotFound(handleNotFound);
   server.begin();
   Serial.print("[Web] Server started on port ");
@@ -239,7 +310,7 @@ void rotateRight() {
 
 void servoLeft() { 
   Serial.println("Robot: Servo Left");
-  servoPosition = max(0, servoPosition - 30);
+  servoPosition = min(180, servoPosition + 30);
   scanServo.write(servoPosition);
   Serial.print("Servo position: ");
   Serial.println(servoPosition);
@@ -248,7 +319,7 @@ void servoLeft() {
 
 void servoRight() { 
   Serial.println("Robot: Servo Right");
-  servoPosition = min(180, servoPosition + 30);
+  servoPosition = max(0, servoPosition - 30);
   scanServo.write(servoPosition);
   Serial.print("Servo position: ");
   Serial.println(servoPosition);
@@ -311,6 +382,56 @@ void readUltrasonic() {
   Serial.print("Ultrasonic distance: ");
   Serial.print(distance);
   Serial.println(" cm");
+}
+
+void handleCommand() {
+  String action = server.arg("action");
+  String response = "";
+  
+  if (action == "forward") {
+    moveForward();
+    response = "Moving forward";
+  } else if (action == "backward") {
+    moveBackward();
+    response = "Moving backward";
+  } else if (action == "left") {
+    moveLeft();
+    response = "Moving left";
+  } else if (action == "right") {
+    moveRight();
+    response = "Moving right";
+  } else if (action == "stop") {
+    stopRobot();
+    response = "Stopped";
+  } else if (action == "rotleft") {
+    rotateLeft();
+    response = "Rotating left";
+  } else if (action == "rotright") {
+    rotateRight();
+    response = "Rotating right";
+  } else if (action == "servoleft") {
+    servoLeft();
+    response = "Servo left";
+  } else if (action == "servoright") {
+    servoRight();
+    response = "Servo right";
+  } else if (action == "servocenter") {
+    servoCenter();
+    response = "Servo centered";
+  } else if (action == "led") {
+    toggleLED();
+    response = String("LED ") + (ledState ? "ON" : "OFF");
+  } else if (action == "buzzer") {
+    toggleBuzzer();
+    response = "Buzzer activated";
+  } else if (action == "distance") {
+    float distance = sensor.Ranging();
+    response = String("Distance: ") + String(distance) + " cm";
+  } else {
+    response = "Unknown command: " + action;
+  }
+  
+  server.send(200, "text/plain", response);
 }
 
 void setup() {
