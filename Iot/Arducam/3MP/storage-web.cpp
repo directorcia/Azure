@@ -1,3 +1,55 @@
+/**
+ * @file storage-web.cpp
+ * @brief Timed image capture from an Arducam Mega (ESP32) and upload to Azure Blob Storage over HTTPS using a SAS token.
+ *
+ * This sketch configures an ESP32 with an Arducam Mega camera to periodically capture
+ * a JPEG image at 3MP (QXGA) resolution and upload it directly to Azure Blob Storage
+ * via an HTTP PUT request over TLS (port 443). It can optionally overwrite a fixed
+ * blob name (e.g., latest.jpg) for easy consumption by web clients.
+ *
+ * Hardware
+ * - Board: ESP32 (tested on common ESP32 dev boards)
+ * - Camera: Arducam Mega connected to VSPI
+ *   - MOSI: GPIO 23
+ *   - MISO: GPIO 19
+ *   - SCK : GPIO 18
+ *   - CS  : GPIO 5
+ * - Optional noise sensor: GPIO 34 (input only), configured but not used in timed mode
+ * - Status LED: GPIO 2 (reserved; not driven)
+ *
+ * Dependencies
+ * - Arduino core for ESP32
+ * - Arducam Mega library
+ * - WiFi and WiFiClientSecure libraries
+ *
+ * Configuration (io_config.h)
+ * - AZURE_STORAGE_ACCOUNT: Storage account name (e.g., mystorageacct)
+ * - AZURE_CONTAINER      : Target container (e.g., images)
+ * - AZURE_SAS_TOKEN      : SAS query string (without leading '?'), including permissions and expiry
+ * - WIFI_SSID / WIFI_PASSWORD: Network credentials
+ *
+ * How It Works
+ * 1. Initializes SPI and the Arducam Mega, sets image quality.
+ * 2. Ensures Wi-Fi connectivity.
+ * 3. Every CAPTURE_INTERVAL_MS, captures a JPEG image at QXGA and uploads it to Azure Blob Storage.
+ * 4. The HTTP PUT includes a fixed Content-Length equal to camera-reported size.
+ * 5. Streams the captured bytes; once the JPEG end marker (0xFF 0xD9) is found, any remaining
+ *    bytes up to Content-Length are padded with zeros to honor the declared length.
+ * 6. Expects HTTP 201 Created on success.
+ *
+ * Alternative Flow
+ * - The helper `captureImage()` streams the JPEG to Serial with headers so a host can
+ *   consume the image from the serial port (SIZE + raw bytes + END_IMAGE_DATA).
+ *
+ * Notes
+ * - GPIO 34 is input-only on ESP32; do not drive it.
+ * - `WiFiClientSecure::setInsecure()` is used to skip certificate validation. For production,
+ *   consider pinning the certificate or using proper trust anchors.
+ *
+ * Limitations
+ * - Azure SAS must grant `w` (write) permission on the container for PUT operations.
+ * - Network instability may cause timeouts; retries are minimal here for simplicity.
+ */
 #include <Arduino.h>
 #include <Arducam_Mega.h>
 #include <SPI.h>
@@ -6,27 +58,53 @@
 #include <driver/adc.h>
 #include "io_config.h"
 
-// Function declarations
+// Function declarations (defined later)
+/**
+ * @brief Capture a JPEG and stream it to Serial for host-side retrieval.
+ * @param resolution Camera resolution (e.g., `CAM_IMAGE_MODE_QXGA`).
+ */
 void captureImage(CAM_IMAGE_MODE resolution);
+/**
+ * @brief Capture a JPEG and upload to Azure Blob Storage via HTTPS.
+ * @param resolution    Camera resolution to use for capture.
+ * @param useFixedName  When true, uploads to a constant blob name (e.g., latest.jpg);
+ *                      otherwise uses a unique, timestamped name.
+ */
 void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName = false);
+/**
+ * @brief Ensure Wi-Fi is connected; attempts connection if disconnected.
+ * @return true if connected to Wi-Fi; false on timeout/failure.
+ */
 bool ensureWifi();
 
-// Arducam Mega camera object
-// ESP32 VSPI pins (per user's wiring):
-// MOSI: GPIO 23
-// MISO: GPIO 19
-// SCK : GPIO 18
-// CS  : GPIO 5
+/**
+ * @section SPI_Pins
+ * VSPI pin mapping for camera transport layer:
+ * - MOSI: GPIO 23
+ * - MISO: GPIO 19
+ * - SCK : GPIO 18
+ * - CS  : GPIO 5
+ */
 const int PIN_MOSI = 23;
 const int PIN_MISO = 19;
 const int PIN_SCK  = 18;
 const int CS_PIN   = 5;
+/**
+ * @brief Global Arducam Mega camera instance using `CS_PIN`.
+ */
 Arducam_Mega myCAM(CS_PIN);
 
-// Noise sensor wiring (digital D0 and optional analog A0 share GPIO34 on many boards)
-// **5V SENSOR WITH VOLTAGE DIVIDER:**
-// VCC -> 5V, GND -> GND, D0 -> voltage divider -> GPIO 34 (input only, max 3.3V)
-// Divider: D0 (5V) --[10k]--+--[10k]-- GND, GPIO34 connects to junction (reads ~2.5V when D0=5V)
+/**
+ * @section Noise_Sensor
+ * Optional noise sensor input. In this sketch, noise sensing is configured but not used for
+ * capture triggering (timed mode only). If enabling noise-triggered capture, consider using
+ * the hysteresis thresholds below to avoid oscillation. GPIO 34 is input-only; do not drive it.
+ *
+ * Example voltage divider for a 5V sensor output -> ESP32 GPIO34 (max 3.3V):
+ *   D0 (5V) --[10k]--+--[10k]-- GND
+ *                    |
+ *                  GPIO34 (reads ~2.5V when D0 = 5V)
+ */
 const int NOISE_PIN = 34;
 unsigned long lastNoiseTrigger = 0;
 const unsigned long NOISE_COOLDOWN_MS = 5000;
@@ -39,18 +117,30 @@ const int NOISE_ANALOG_LOW   = 1800; // re-arm when analogRead <= this (hysteres
 const bool NOISE_AUTO_BASELINE = true; // if true, derive thresholds from a rolling baseline
 const int NOISE_MARGIN = 20;          // margin around baseline for trigger when auto-baseline
 
-// Status LED (on-board) — unused (LED handling removed to avoid conflicts)
+// Status LED (on-board): reserved/unused to avoid conflicts
 const int STATUS_LED_PIN = 2;
 
 // Capture counter for unique filenames when needed
 static uint32_t captureCounter = 0;
 
-// Timed capture interval (ms)
+/**
+ * @brief Timed capture period (milliseconds). Image capture+upload is triggered every interval.
+ */
 const unsigned long CAPTURE_INTERVAL_MS = 60000; // 60 seconds
 
-// Build Azure host and path from io_config.h
+/**
+ * @brief Azure Blob endpoint host derived from `AZURE_STORAGE_ACCOUNT`.
+ *        Example: mystorageacct.blob.core.windows.net
+ */
 String azureBlobHost = String(AZURE_STORAGE_ACCOUNT) + ".blob.core.windows.net";
 
+/**
+ * @brief Arduino setup routine.
+ * - Initializes serial @ 115200 bps.
+ * - Starts VSPI and Arducam Mega camera, sets high JPEG quality.
+ * - Configures ADC resolution and attenuation for optional noise input.
+ * - Attempts Wi-Fi connection early to enable first upload.
+ */
 void setup() {
   // Initialize serial communication
   Serial.begin(115200);
@@ -90,6 +180,12 @@ void setup() {
   ensureWifi();
 }
 
+/**
+ * @brief Main loop: performs a timed capture and upload.
+ *
+ * Captures a 3MP (QXGA) JPEG and uploads every `CAPTURE_INTERVAL_MS`. When `useFixedName`
+ * is true (as used here), the blob `latest.jpg` is overwritten each cycle.
+ */
 void loop() {
   static unsigned long lastCaptureMs = 0;
   unsigned long now = millis();
@@ -104,6 +200,11 @@ void loop() {
   delay(50);
 }
 
+/**
+ * @brief Ensure Wi-Fi connectivity.
+ * Attempts to connect to the configured SSID up to 20 seconds.
+ * @return true if `WiFi.status() == WL_CONNECTED`; false otherwise.
+ */
 bool ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) {
     return true;
@@ -132,6 +233,27 @@ bool ensureWifi() {
   }
 }
 
+/**
+ * @brief Capture a JPEG and upload it to Azure Blob Storage over HTTPS.
+ *
+ * This function captures a JPEG with the specified resolution, opens a TLS connection
+ * to Azure Blob Storage, and issues an HTTP PUT request using a SAS token appended as
+ * query parameters. The `Content-Length` header matches the camera-reported size.
+ *
+ * Data Streaming Strategy
+ * - Bytes are read from the camera and buffered to the TLS socket.
+ * - When the JPEG end marker (0xFF 0xD9) is encountered, any remaining bytes up to
+ *   `Content-Length` are padded with zeros to align with the declared size.
+ * - This ensures Azure accepts the payload length even if the camera ends the JPEG early.
+ *
+ * Response Handling
+ * - Waits for server response and checks the HTTP status line.
+ * - Treats `HTTP/1.1 201 Created` as success; logs response headers for diagnostics.
+ *
+ * @param resolution   Camera resolution (e.g., `CAM_IMAGE_MODE_QXGA`).
+ * @param useFixedName If true, overwrites `latest.jpg`. If false, generates a unique name
+ *                     using `captureCounter` and a millisecond timestamp.
+ */
 void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName) {
   Serial.println("┌─────────────────────────────────────┐");
   Serial.println("│  CAPTURE + AZURE UPLOAD            │");
@@ -184,7 +306,7 @@ void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName) {
   }
   Serial.println("✓ Connected to Azure");
 
-  // Send HTTP PUT with known Content-Length
+  // Send HTTP PUT with known Content-Length (SAS grants write permission)
   Serial.println("Sending PUT request...");
   client.print("PUT ");
   client.print(azureBlobPath);
@@ -254,7 +376,7 @@ void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName) {
   Serial.print(sent);
   Serial.println(" bytes");
 
-  // Ensure all data is sent
+  // Ensure all data is sent to the network stack
   client.flush();
   Serial.println("Flushed data, waiting for response...");
 
@@ -271,7 +393,7 @@ void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName) {
     return;
   }
 
-  // Read HTTP status line
+  // Read HTTP status line (e.g., "HTTP/1.1 201 Created")
   String statusLine = client.readStringUntil('\n');
   statusLine.trim();
   Serial.print("Azure response: ");
@@ -300,6 +422,20 @@ void captureAndUpload(CAM_IMAGE_MODE resolution, bool useFixedName) {
   client.stop();
   Serial.println();
 }
+/**
+ * @brief Capture a JPEG and stream it to Serial.
+ *
+ * Emits a compact header that a host tool can parse:
+ * - `SIZE:<bytes>` on a single line
+ * - `START_BINARY_DATA` marker
+ * - Raw JPEG bytes until the end marker (0xFF 0xD9) or safety limit
+ * - `END_IMAGE_DATA` marker
+ *
+ * This path is useful for debugging or host-side ingestion where the image is
+ * retrieved over serial rather than uploaded to a remote service.
+ *
+ * @param resolution Camera resolution to capture (e.g., `CAM_IMAGE_MODE_VGA`).
+ */
 void captureImage(CAM_IMAGE_MODE resolution) {
   String resName;
   switch(resolution) {
