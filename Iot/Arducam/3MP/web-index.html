@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latest Image</title>
+    <meta http-equiv="refresh" content="60">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            text-align: center;
+        }
+        img {
+            max-width: 90%;
+            max-height: 80vh;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .refresh-info {
+            margin-top: 20px;
+            color: #666;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img src="https://<YOUR BLOB STORAGE ACCOUNT>.blob.core.windows.net>/images/latest.jpg" alt="Latest Image">
+        <div class="refresh-info">Auto-refreshing every 60 seconds</div>
+    </div>
+</body>
+</html>
