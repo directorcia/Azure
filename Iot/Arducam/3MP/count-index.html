@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latest Image with AI Analysis</title>
+    <meta http-equiv="refresh" content="60">
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            text-align: center;
+        }
+        img {
+            max-width: 90%;
+            max-height: 70vh;
+            height: auto;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .analysis-box {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .analysis-box h2 {
+            margin-top: 0;
+            color: #333;
+            margin-bottom: 15px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #1976d2;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #1976d2;
+        }
+        .weather-info {
+            font-size: 16px;
+            line-height: 1.6;
+            color: #555;
+            text-align: left;
+        }
+        .loading {
+            color: #999;
+            font-style: italic;
+        }
+        .error {
+            color: #d32f2f;
+        }
+        .refresh-info {
+            margin-top: 20px;
+            color: #666;
+            font-size: 14px;
+        }
+        .cache-info {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+            color: #999;
+            font-size: 12px;
+        }
+        .countdown {
+            font-weight: bold;
+            color: #1976d2;
+        }
+        .debug-panel {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            text-align: left;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .debug-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .debug-item {
+            margin: 5px 0;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <img id="mainImage" src="https://arducamimages.blob.core.windows.net/images/latest.jpg" alt="Latest Image">
+        
+        <div class="analysis-box">
+            <h2>AI Image Analysis (v4.0 Florence)</h2>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Vehicles</div>
+                    <div class="stat-value" id="vehicleCount">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Weather Status</div>
+                    <div class="stat-value" id="weatherStatus" style="font-size: 18px;">--</div>
+                </div>
+            </div>
+            
+            <div id="weatherAnalysis" class="weather-info loading">Analyzing image...</div>
+            <div id="cacheInfo" class="cache-info"></div>
+            
+            <div class="debug-panel">
+                <div class="debug-title">API Debug Info (what Azure v4.0 sees):</div>
+                <div id="debugInfo" class="debug-item">Waiting for analysis...</div>
+            </div>
+        </div>
+        
+        <div class="refresh-info">Image refreshes every 60 seconds | AI analysis every 5 minutes</div>
+    </div>
+
+    <script>
+        // Azure AI Vision v4.0 credentials
+        const VISION_ENDPOINT = 'https://<YOUR VISION SERVICE NAME>.cognitiveservices.azure.com/';
+        const VISION_KEY = '<YOUR VISION SERVICE KEY>';
+        const IMAGE_URL = 'https://<YOUR BLOB STORAGE ACCOUNT>.blob.core.windows.net/images/latest.jpg';
+        
+        // Cache settings - AI analysis every 5 minutes to stay in free tier
+        const CACHE_DURATION = 5 * 60 * 1000;
+        const CACHE_KEY = 'weatherAnalysisCache';
+        const TIMESTAMP_KEY = 'weatherAnalysisTimestamp';
+
+        let countdownInterval;
+
+        function getCachedAnalysis() {
+            const cached = localStorage.getItem(CACHE_KEY);
+            const timestamp = localStorage.getItem(TIMESTAMP_KEY);
+            
+            if (cached && timestamp) {
+                const age = Date.now() - parseInt(timestamp);
+                if (age < CACHE_DURATION) {
+                    return {
+                        data: JSON.parse(cached),
+                        age: age,
+                        remaining: CACHE_DURATION - age
+                    };
+                }
+            }
+            return null;
+        }
+
+        function setCachedAnalysis(analysisData) {
+            localStorage.setItem(CACHE_KEY, JSON.stringify(analysisData));
+            localStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
+        }
+
+        function formatTime(ms) {
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        function updateCountdown(remainingMs) {
+            const cacheInfoDiv = document.getElementById('cacheInfo');
+            const timeLeft = formatTime(remainingMs);
+            cacheInfoDiv.innerHTML = `Using cached analysis. Next AI update in <span class="countdown">${timeLeft}</span>`;
+        }
+
+        function startCountdown(initialRemaining) {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+            }
+
+            let remaining = initialRemaining;
+            updateCountdown(remaining);
+
+            countdownInterval = setInterval(() => {
+                remaining -= 1000;
+                if (remaining <= 0) {
+                    clearInterval(countdownInterval);
+                    analyzeImage();
+                } else {
+                    updateCountdown(remaining);
+                }
+            }, 1000);
+        }
+
+        function countVehicles(tags, objects) {
+            const vehicleKeywords = [
+                'car', 'truck', 'vehicle', 'bus', 'van', 'suv', 'automobile', 'taxi',
+                'motorcycle', 'bike', 'bicycle', 'scooter', 'motorbike',
+                'jeep', 'sedan', 'hatchback', 'pickup', 'lorry', 'trailer',
+                'minivan', 'rv', 'camper', 'ambulance', 'firetruck', 'police car'
+            ];
+            
+            let vehicleCount = 0;
+            let vehicleTypes = [];
+            let detectedObjects = [];
+            let debugInfo = [];
+
+            if (objects && objects.length > 0) {
+                debugInfo.push(`✓ Objects array has ${objects.length} items`);
+                
+                objects.forEach((obj, index) => {
+                    const objName = (obj.tags?.[0]?.name || obj.name || 'unknown').toLowerCase();
+                    const confidence = obj.tags?.[0]?.confidence || obj.confidence || 0;
+                    const displayName = obj.tags?.[0]?.name || obj.name;
+                    
+                    debugInfo.push(`Object ${index + 1}: "${displayName}" (${(confidence * 100).toFixed(1)}%)`);
+                    
+                    if (vehicleKeywords.some(keyword => objName.includes(keyword))) {
+                        vehicleCount++;
+                        detectedObjects.push(displayName);
+                        
+                        if (!vehicleTypes.includes(displayName)) {
+                            vehicleTypes.push(displayName);
+                        }
+                        debugInfo.push(`  → ✓ Counted as vehicle #${vehicleCount}`);
+                    } else {
+                        debugInfo.push(`  → ✗ Not a vehicle`);
+                    }
+                });
+            } else {
+                debugInfo.push('✗ No objects detected in API response');
+            }
+
+            if (vehicleCount === 0 && tags && tags.length > 0) {
+                debugInfo.push(`Analyzing tags as fallback (${tags.length} tags)`);
+                
+                const vehicleTags = tags.filter(tag => {
+                    const tagName = (tag.name || '').toLowerCase();
+                    return vehicleKeywords.some(keyword => tagName.includes(keyword)) && (tag.confidence || 0) > 0.5;
+                });
+
+                vehicleTags.forEach(tag => {
+                    debugInfo.push(`Vehicle tag: "${tag.name}" (${((tag.confidence || 0) * 100).toFixed(1)}%)`);
+                });
+
+                if (vehicleTags.length > 0) {
+                    const contextTags = tags.map(t => (t.name || '').toLowerCase());
+                    
+                    if (contextTags.includes('parking lot') || contextTags.includes('parking')) {
+                        vehicleCount = Math.min(vehicleTags.length, 5);
+                        debugInfo.push(`Parking context → estimating ${vehicleCount} vehicles`);
+                    } else if (contextTags.includes('traffic') || contextTags.includes('highway') || contextTags.includes('street')) {
+                        vehicleCount = Math.min(vehicleTags.length, 3);
+                        debugInfo.push(`Traffic context → estimating ${vehicleCount} vehicles`);
+                    } else {
+                        vehicleCount = vehicleTags.length > 0 ? 1 : 0;
+                        debugInfo.push(`Generic context → estimating ${vehicleCount} vehicle(s)`);
+                    }
+                    
+                    vehicleTypes = vehicleTags.map(t => t.name);
+                }
+            }
+
+            debugInfo.push(`<strong>═══ FINAL COUNT: ${vehicleCount} vehicle(s) ═══</strong>`);
+            
+            return { 
+                count: vehicleCount, 
+                types: vehicleTypes,
+                detectedObjects: detectedObjects,
+                debugInfo: debugInfo
+            };
+        }
+
+        function displayAnalysis(analysisData) {
+            const analysisDiv = document.getElementById('weatherAnalysis');
+            const vehicleCountDiv = document.getElementById('vehicleCount');
+            const weatherStatusDiv = document.getElementById('weatherStatus');
+            const debugDiv = document.getElementById('debugInfo');
+
+            vehicleCountDiv.textContent = analysisData.vehicleCount;
+            weatherStatusDiv.textContent = analysisData.weatherSummary;
+
+            if (analysisData.debugInfo) {
+                debugDiv.innerHTML = analysisData.debugInfo.join('<br>');
+            }
+
+            let description = `<p><strong>Scene:</strong> ${analysisData.caption}</p>`;
+            
+            if (analysisData.detectedObjects && analysisData.detectedObjects.length > 0) {
+                description += `<p><strong>Vehicles detected:</strong> ${analysisData.detectedObjects.join(', ')}</p>`;
+            } else if (analysisData.vehicleTypes.length > 0) {
+                description += `<p><strong>Vehicle types seen:</strong> ${analysisData.vehicleTypes.join(', ')}</p>`;
+            } else if (analysisData.vehicleCount === 0) {
+                description += `<p><strong>Vehicles:</strong> No vehicles detected in image</p>`;
+            }
+            
+            if (analysisData.weatherTags.length > 0) {
+                description += `<p><strong>Weather conditions:</strong> ${analysisData.weatherTags.join(', ')}</p>`;
+            }
+            
+            description += `<p style="font-size: 12px; color: #999; margin-top: 10px;">Last analyzed: ${analysisData.timestamp}</p>`;
+            
+            analysisDiv.innerHTML = description;
+            analysisDiv.className = 'weather-info';
+        }
+
+        async function analyzeImage() {
+            const analysisDiv = document.getElementById('weatherAnalysis');
+            const cacheInfoDiv = document.getElementById('cacheInfo');
+            const debugDiv = document.getElementById('debugInfo');
+            
+            const cached = getCachedAnalysis();
+            if (cached) {
+                displayAnalysis(cached.data);
+                startCountdown(cached.remaining);
+                return;
+            }
+
+            analysisDiv.innerHTML = 'Analyzing image with Azure AI Vision v4.0...';
+            analysisDiv.className = 'weather-info loading';
+            document.getElementById('vehicleCount').textContent = '--';
+            document.getElementById('weatherStatus').textContent = '--';
+            debugDiv.innerHTML = 'Calling Azure API v4.0...';
+            cacheInfoDiv.innerHTML = '';
+            
+            try {
+                // Azure AI Vision v4.0 API call
+                const response = await fetch(VISION_ENDPOINT + 'computervision/imageanalysis:analyze?api-version=2024-02-01&features=tags,objects&language=en&model-version=latest', {
+                    method: 'POST',
+                    headers: {
+                        'Ocp-Apim-Subscription-Key': VISION_KEY,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        url: IMAGE_URL
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`API Error: ${response.status} - ${errorText}`);
+                }
+
+                const data = await response.json();
+                
+                // v4.0 API response format
+                const caption = 'Image analyzed';
+                const tags = data.tagsResult?.values || data.tags?.values || [];
+                const objects = data.objectsResult?.values || data.objects?.values || [];
+                
+                const vehicleData = countVehicles(tags, objects);
+                
+                const weatherTags = tags
+                    .filter(tag => (tag.confidence || 0) > 0.7)
+                    .map(tag => tag.name)
+                    .filter(name => 
+                        name.match(/cloud|sun|rain|snow|fog|mist|clear|overcast|storm|wind|sky/i)
+                    );
+
+                let weatherSummary = 'Unknown';
+                if (weatherTags.length > 0) {
+                    if (weatherTags.some(t => t.match(/sun|clear/i))) weatherSummary = 'Clear';
+                    else if (weatherTags.some(t => t.match(/cloud|overcast/i))) weatherSummary = 'Cloudy';
+                    else if (weatherTags.some(t => t.match(/rain/i))) weatherSummary = 'Rainy';
+                    else if (weatherTags.some(t => t.match(/fog|mist/i))) weatherSummary = 'Foggy';
+                    else weatherSummary = weatherTags[0];
+                }
+
+                const analysisData = {
+                    caption: caption,
+                    vehicleCount: vehicleData.count,
+                    vehicleTypes: vehicleData.types,
+                    detectedObjects: vehicleData.detectedObjects,
+                    debugInfo: vehicleData.debugInfo,
+                    weatherTags: weatherTags,
+                    weatherSummary: weatherSummary,
+                    timestamp: new Date().toLocaleTimeString()
+                };
+                
+                setCachedAnalysis(analysisData);
+                displayAnalysis(analysisData);
+                startCountdown(CACHE_DURATION);
+                
+            } catch (error) {
+                console.error('Error analyzing image:', error);
+                analysisDiv.innerHTML = `<p class="error">Unable to analyze image: ${error.message}</p>`;
+                analysisDiv.className = 'weather-info error';
+                document.getElementById('vehicleCount').textContent = '!';
+                document.getElementById('weatherStatus').textContent = 'Error';
+                debugDiv.innerHTML = `<span style="color: red;">Error: ${error.message}</span>`;
+            }
+        }
+
+        window.addEventListener('load', analyzeImage);
+
+        window.addEventListener('beforeunload', () => {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+            }
+        });
+    </script>
+</body>
+</html>
