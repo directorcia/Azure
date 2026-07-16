@@ -196,6 +196,142 @@ Action chooseFallbackTurn() {
   return (leftEff > rightEff) ? ACTION_LEFT : ACTION_RIGHT;
 }
 
+ManeuverType actionToStrafeManeuver(Action action) {
+  return action == ACTION_LEFT ? MANEUVER_STRAFE_LEFT : MANEUVER_STRAFE_RIGHT;
+}
+
+ManeuverType actionToTurnManeuver(Action action) {
+  return action == ACTION_LEFT ? MANEUVER_TURN_LEFT_90 : MANEUVER_TURN_RIGHT_90;
+}
+
+ManeuverPlan buildStrafePlan(Action action, uint16_t durationMs) {
+  ManeuverPlan plan = defaultPlan();
+  plan.primary = actionToStrafeManeuver(action);
+  plan.primaryDurationMs = clampDuration(durationMs, STRAFE_DURATION_MS);
+  plan.secondary = MANEUVER_RESCAN;
+  plan.secondaryDurationMs = RESCAN_PAUSE_MS;
+  plan.confidence = 0.0f;
+  return plan;
+}
+
+ManeuverPlan buildTurnPlan(Action action) {
+  ManeuverPlan plan = defaultPlan();
+  plan.primary = actionToTurnManeuver(action);
+  plan.primaryDurationMs = TURN_90_DURATION_MS;
+  plan.secondary = MANEUVER_RESCAN;
+  plan.secondaryDurationMs = RESCAN_PAUSE_MS;
+  plan.confidence = 0.0f;
+  return plan;
+}
+
+ManeuverPlan buildRecoveryPlan(Action action) {
+  ManeuverPlan plan = defaultPlan();
+  plan.primary = MANEUVER_BACKWARD;
+  plan.primaryDurationMs = BACKUP_DURATION_MS;
+  plan.secondary = actionToTurnManeuver(action);
+  plan.secondaryDurationMs = TURN_90_DURATION_MS;
+  plan.confidence = 0.0f;
+  return plan;
+}
+
+String planToPromptText(const char *label, const ManeuverPlan &plan) {
+  return String(label) + "={primary:" + maneuverTypeToString(plan.primary) +
+         ",primary_ms:" + String(plan.primaryDurationMs) +
+         ",secondary:" + maneuverTypeToString(plan.secondary) +
+         ",secondary_ms:" + String(plan.secondaryDurationMs) +
+         ",confidence:" + String(plan.confidence, 2) +
+         ",risk:" + String(plan.riskScore, 2) + "}";
+}
+
+float scoreLocalPlanCandidate(const ManeuverPlan &candidate, int leftEff, int frontEff, int rightEff, bool repeatedTrap, uint8_t oscillationCount, float frontTrendCmValue) {
+  float score = 0.0f;
+  int preferredSideEff = 0;
+
+  if (candidate.primary == MANEUVER_STRAFE_LEFT || candidate.primary == MANEUVER_TURN_LEFT_90) {
+    preferredSideEff = leftEff;
+  } else if (candidate.primary == MANEUVER_STRAFE_RIGHT || candidate.primary == MANEUVER_TURN_RIGHT_90) {
+    preferredSideEff = rightEff;
+  }
+
+  switch (candidate.primary) {
+    case MANEUVER_BACKWARD:
+      score = 0.42f;
+      if (frontEff <= EMERGENCY_REVERSE_CM) {
+        score += 0.35f;
+      } else if (frontEff <= ULTRASONIC_ALERT_CM) {
+        score += 0.18f;
+      } else {
+        score -= 0.22f;
+      }
+      if (repeatedTrap) {
+        score += 0.18f;
+      }
+      if (frontTrendCmValue < -4.0f) {
+        score += 0.08f;
+      }
+      break;
+    case MANEUVER_STRAFE_LEFT:
+    case MANEUVER_STRAFE_RIGHT:
+      score = 0.48f + ((preferredSideEff - frontEff) / 180.0f);
+      score += (preferredSideEff - ((candidate.primary == MANEUVER_STRAFE_LEFT) ? rightEff : leftEff)) / 220.0f;
+      if (frontEff <= ULTRASONIC_ALERT_CM) {
+        score += 0.08f;
+      } else {
+        score -= 0.04f;
+      }
+      if (repeatedTrap) {
+        score -= 0.05f;
+      }
+      break;
+    case MANEUVER_TURN_LEFT_90:
+    case MANEUVER_TURN_RIGHT_90:
+      score = 0.44f + (preferredSideEff / 240.0f);
+      if (frontEff <= ULTRASONIC_ALERT_CM) {
+        score += 0.12f;
+      }
+      if (repeatedTrap || oscillationCount >= 2) {
+        score += 0.10f;
+      }
+      if (frontTrendCmValue < -4.0f) {
+        score += 0.05f;
+      }
+      break;
+    case MANEUVER_RESCAN:
+      score = 0.16f;
+      if (frontTrendCmValue < 0.0f || oscillationCount >= 2) {
+        score += 0.10f;
+      }
+      break;
+    default:
+      score = 0.0f;
+      break;
+  }
+
+  if (candidate.secondary == MANEUVER_RESCAN) {
+    score += 0.05f;
+  }
+
+  if (candidate.primary == actionToStrafeManeuver(lastNonStopDecision) && oscillationCount >= 2 && !repeatedTrap) {
+    score -= 0.08f;
+  }
+
+  if ((candidate.primary == MANEUVER_TURN_LEFT_90 || candidate.primary == MANEUVER_STRAFE_LEFT) && leftEff < rightEff) {
+    score -= 0.02f;
+  }
+
+  if ((candidate.primary == MANEUVER_TURN_RIGHT_90 || candidate.primary == MANEUVER_STRAFE_RIGHT) && rightEff < leftEff) {
+    score -= 0.02f;
+  }
+
+  if (score < 0.0f) {
+    score = 0.0f;
+  }
+  if (score > 1.0f) {
+    score = 1.0f;
+  }
+  return score;
+}
+
 bool isHeadOnWall(float frontCm, float leftCm, float rightCm) {
   if (!isValidDistance(frontCm) || !isValidDistance(leftCm) || !isValidDistance(rightCm)) {
     return false;
@@ -396,31 +532,63 @@ ManeuverPlan chooseLocalPlan(bool repeatedTrap) {
   int rightEff = effectiveDistance(rightDistanceCm);
   int frontEff = effectiveDistance(frontDistanceCm);
   Action preferredTurn = chooseFallbackTurn();
+  uint8_t oscillationCount = detectPlanOscillationCount();
+  float frontTrend = frontTrendCm();
 
   if (frontEff <= EMERGENCY_REVERSE_CM || repeatedTrap) {
-    plan.primary = MANEUVER_BACKWARD;
-    plan.primaryDurationMs = BACKUP_DURATION_MS;
-    plan.secondary = (preferredTurn == ACTION_LEFT) ? MANEUVER_TURN_LEFT_90 : MANEUVER_TURN_RIGHT_90;
-    plan.secondaryDurationMs = TURN_90_DURATION_MS;
+    plan = buildRecoveryPlan(preferredTurn);
     plan.confidence = repeatedTrap ? 0.95f : 0.85f;
     return plan;
   }
 
-  if (abs(leftEff - rightEff) >= WIDE_OPEN_DIFF_CM) {
-    plan.primary = (leftEff > rightEff) ? MANEUVER_STRAFE_LEFT : MANEUVER_STRAFE_RIGHT;
-    plan.primaryDurationMs = STRAFE_DURATION_MS;
-    plan.secondary = MANEUVER_RESCAN;
-    plan.secondaryDurationMs = RESCAN_PAUSE_MS;
-    plan.confidence = 0.78f;
-    return plan;
+  Action openSideAction = chooseFallbackTurn();
+  int sideGap = abs(leftEff - rightEff);
+  uint16_t strafeDuration = STRAFE_DURATION_MS;
+
+  if (sideGap >= WIDE_OPEN_DIFF_CM) {
+    strafeDuration -= 60;
+  } else if (sideGap >= 10) {
+    strafeDuration -= 20;
+  } else {
+    strafeDuration += 30;
   }
 
-  plan.primary = (preferredTurn == ACTION_LEFT) ? MANEUVER_TURN_LEFT_90 : MANEUVER_TURN_RIGHT_90;
-  plan.primaryDurationMs = TURN_90_DURATION_MS;
-  plan.secondary = MANEUVER_RESCAN;
-  plan.secondaryDurationMs = RESCAN_PAUSE_MS;
-  plan.confidence = 0.68f;
-  return plan;
+  if (frontEff <= ULTRASONIC_ALERT_CM) {
+    strafeDuration -= 20;
+  } else if (frontEff >= 45) {
+    strafeDuration += 20;
+  }
+
+  if (strafeDuration < MIN_MANEUVER_DURATION_MS) {
+    strafeDuration = MIN_MANEUVER_DURATION_MS;
+  }
+  if (strafeDuration > MAX_MANEUVER_DURATION_MS) {
+    strafeDuration = MAX_MANEUVER_DURATION_MS;
+  }
+
+  ManeuverPlan strafePlan = buildStrafePlan(openSideAction, strafeDuration);
+  ManeuverPlan turnPlan = buildTurnPlan(openSideAction);
+  ManeuverPlan recoveryPlan = buildRecoveryPlan(openSideAction);
+
+  float strafeScore = scoreLocalPlanCandidate(strafePlan, leftEff, frontEff, rightEff, repeatedTrap, oscillationCount, frontTrend);
+  float turnScore = scoreLocalPlanCandidate(turnPlan, leftEff, frontEff, rightEff, repeatedTrap, oscillationCount, frontTrend);
+  float recoveryScore = scoreLocalPlanCandidate(recoveryPlan, leftEff, frontEff, rightEff, repeatedTrap, oscillationCount, frontTrend);
+
+  ManeuverPlan bestPlan = strafePlan;
+  float bestScore = strafeScore;
+  if (turnScore > bestScore) {
+    bestPlan = turnPlan;
+    bestScore = turnScore;
+  }
+  if (recoveryScore > bestScore) {
+    bestPlan = recoveryPlan;
+    bestScore = recoveryScore;
+  }
+
+  bestPlan.riskScore = estimateLocalRiskScore();
+  bestPlan.repeatedTrap = repeatedTrap;
+  bestPlan.confidence = bestScore;
+  return bestPlan;
 }
 
 bool extractFirstJsonObject(const String &input, String &jsonText) {
@@ -545,10 +713,26 @@ ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool
     return fallbackPlan;
   }
 
+  Action openSideAction = chooseFallbackTurn();
+  ManeuverPlan localStrafePlan = buildStrafePlan(openSideAction, fallbackPlan.primaryDurationMs);
+  ManeuverPlan localTurnPlan = buildTurnPlan(openSideAction);
+  ManeuverPlan localRecoveryPlan = buildRecoveryPlan(openSideAction);
+  localStrafePlan.riskScore = estimateLocalRiskScore();
+  localTurnPlan.riskScore = estimateLocalRiskScore();
+  localRecoveryPlan.riskScore = estimateLocalRiskScore();
+  String candidateSummary = planToPromptText("baseline", fallbackPlan) + "; " +
+                            planToPromptText("strafe", localStrafePlan) + "; " +
+                            planToPromptText("turn", localTurnPlan) + "; " +
+                            planToPromptText("recovery", localRecoveryPlan);
+
   String prompt =
-      "You are planning a safe indoor robot avoidance maneuver. "
-      "Use only these maneuvers: STRAFE_LEFT, STRAFE_RIGHT, BACKWARD, TURN_LEFT_90, TURN_RIGHT_90, STOP, RESCAN. "
-      "Safety rules: do not pick STOP unless fully blocked, use BACKWARD when trapped, and prefer the more open side. "
+      "You are a safety-first indoor navigation planner for a robot. "
+      "Choose the safest maneuver that is most likely to increase front clearance and break oscillation. "
+      "You may only use these maneuvers: STRAFE_LEFT, STRAFE_RIGHT, BACKWARD, TURN_LEFT_90, TURN_RIGHT_90, RESCAN, STOP. "
+      "Never invent a new action. Do not use STOP unless all motion options are blocked or unsafe. "
+      "If repeatedTrap is true or front trend is negative, prefer a recovery maneuver that backs up before turning. "
+      "Prefer the more open side when choosing between left and right. "
+      "If the baseline candidate is already safe, keep it unless another candidate clearly improves clearance. "
       "Return strict JSON only, no markdown, with keys primary, primary_duration_ms, secondary, secondary_duration_ms, confidence, risk, reason. "
       "Current distances cm: front=" + String(frontDistanceCm, 1) +
       ", left=" + String(leftDistanceCm, 1) +
@@ -561,9 +745,10 @@ ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool
       ", after=" + String(lastPlanFrontAfterCm, 1) +
       ". Baseline primary=" + String(maneuverTypeToString(fallbackPlan.primary)) +
       ", baseline secondary=" + String(maneuverTypeToString(fallbackPlan.secondary)) +
+      ". Candidate plans: " + candidateSummary +
       ". Recent hazard history=" + buildHistorySummary() +
       ". Recent plans=" + buildRecentPlanSummary() +
-      ". Example JSON: {\"primary\":\"BACKWARD\",\"primary_duration_ms\":350,\"secondary\":\"TURN_LEFT_90\",\"secondary_duration_ms\":520,\"confidence\":0.82,\"risk\":0.74,\"reason\":\"repeated_trap\"}.";
+      ". Example JSON: {\"primary\":\"BACKWARD\",\"primary_duration_ms\":350,\"secondary\":\"TURN_LEFT_90\",\"secondary_duration_ms\":520,\"confidence\":0.82,\"risk\":0.74,\"reason\":\"recovery_from_trap\"}.";
 
   String body = String("{\"contents\":[{\"parts\":[{\"text\":\"") + prompt +
           "\"}]}],\"generationConfig\":{\"temperature\":0.15,\"maxOutputTokens\":160,\"responseMimeType\":\"application/json\"}}";
