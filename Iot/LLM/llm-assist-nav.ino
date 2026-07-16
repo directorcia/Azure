@@ -43,6 +43,7 @@ struct ManeuverPlan {
   ManeuverType secondary;
   uint16_t secondaryDurationMs;
   float confidence;
+  float riskScore;
   bool repeatedTrap;
 };
 
@@ -78,6 +79,7 @@ const unsigned long SENSOR_INTERVAL_MS = 70;
 const unsigned long STRAFE_DURATION_MS = 450;
 const unsigned long BACKUP_DURATION_MS = 380;
 const unsigned long GEMINI_HTTP_TIMEOUT_MS = 12000;
+const unsigned long GEMINI_HTTP_TIMEOUT_TIGHT_MS = 3800;
 const unsigned long HAZARD_DECISION_COOLDOWN_MS = 800;
 const unsigned long FRONT_STALE_MS = 450;
 const unsigned long HAZARD_BURST_WINDOW_MS = 3000;
@@ -93,6 +95,8 @@ const int SAFE_UNKNOWN_DISTANCE_CM = 120;
 const uint8_t NAV_HISTORY_SIZE = 8;
 const uint8_t TRAP_REPEAT_THRESHOLD = 3;
 const float MIN_LLM_CONFIDENCE = 0.45f;
+const float MIN_LLM_CONFIDENCE_FOR_DISAGREEMENT = 0.72f;
+const float PLAN_IMPROVEMENT_MARGIN_CM = 5.0f;
 const uint16_t MIN_MANEUVER_DURATION_MS = 180;
 const uint16_t MAX_MANEUVER_DURATION_MS = 700;
 
@@ -117,6 +121,9 @@ uint8_t navHistoryCount = 0;
 uint8_t navHistoryWriteIndex = 0;
 ManeuverType recentPlans[4] = {MANEUVER_STOP, MANEUVER_STOP, MANEUVER_STOP, MANEUVER_STOP};
 uint8_t recentPlanWriteIndex = 0;
+int8_t lastPlanOutcome = 0;
+float lastPlanFrontBeforeCm = -1.0f;
+float lastPlanFrontAfterCm = -1.0f;
 
 void setBothLeds(bool on) {
   uint8_t level = on ? (LED_ACTIVE_HIGH ? HIGH : LOW) : (LED_ACTIVE_HIGH ? LOW : HIGH);
@@ -224,17 +231,17 @@ ManeuverType parseManeuverType(const String &text) {
   String normalized = text;
   normalized.toUpperCase();
   normalized.trim();
-  if (normalized.indexOf("STRAFE_LEFT") >= 0 || normalized.indexOf("LEFT") >= 0) {
-    return MANEUVER_STRAFE_LEFT;
-  }
-  if (normalized.indexOf("STRAFE_RIGHT") >= 0 || normalized.indexOf("RIGHT") >= 0) {
-    return MANEUVER_STRAFE_RIGHT;
-  }
   if (normalized.indexOf("TURN_LEFT_90") >= 0) {
     return MANEUVER_TURN_LEFT_90;
   }
   if (normalized.indexOf("TURN_RIGHT_90") >= 0) {
     return MANEUVER_TURN_RIGHT_90;
+  }
+  if (normalized.indexOf("STRAFE_LEFT") >= 0 || normalized.indexOf("LEFT") >= 0) {
+    return MANEUVER_STRAFE_LEFT;
+  }
+  if (normalized.indexOf("STRAFE_RIGHT") >= 0 || normalized.indexOf("RIGHT") >= 0) {
+    return MANEUVER_STRAFE_RIGHT;
   }
   if (normalized.indexOf("BACKWARD") >= 0 || normalized.indexOf("REVERSE") >= 0) {
     return MANEUVER_BACKWARD;
@@ -314,6 +321,61 @@ String buildHistorySummary() {
   return summary;
 }
 
+float frontTrendCm() {
+  if (navHistoryCount < 2) {
+    return 0.0f;
+  }
+  uint8_t newest = (navHistoryWriteIndex + NAV_HISTORY_SIZE - 1) % NAV_HISTORY_SIZE;
+  uint8_t oldest = (navHistoryCount == NAV_HISTORY_SIZE) ? navHistoryWriteIndex : 0;
+  return navHistory[newest].frontCm - navHistory[oldest].frontCm;
+}
+
+uint8_t detectPlanOscillationCount() {
+  uint8_t swaps = 0;
+  for (uint8_t i = 1; i < 4; ++i) {
+    uint8_t prevIdx = (recentPlanWriteIndex + i - 1) % 4;
+    uint8_t currIdx = (recentPlanWriteIndex + i) % 4;
+    ManeuverType prev = recentPlans[prevIdx];
+    ManeuverType curr = recentPlans[currIdx];
+    bool leftRightSwap = (prev == MANEUVER_STRAFE_LEFT && curr == MANEUVER_STRAFE_RIGHT) ||
+                         (prev == MANEUVER_STRAFE_RIGHT && curr == MANEUVER_STRAFE_LEFT) ||
+                         (prev == MANEUVER_TURN_LEFT_90 && curr == MANEUVER_TURN_RIGHT_90) ||
+                         (prev == MANEUVER_TURN_RIGHT_90 && curr == MANEUVER_TURN_LEFT_90);
+    if (leftRightSwap) {
+      swaps++;
+    }
+  }
+  return swaps;
+}
+
+const char *lastPlanOutcomeString() {
+  if (lastPlanOutcome > 0) {
+    return "improved_clearance";
+  }
+  if (lastPlanOutcome < 0) {
+    return "worsened_or_no_gain";
+  }
+  return "unknown";
+}
+
+float estimateLocalRiskScore() {
+  float frontEff = (float)effectiveDistance(frontDistanceCm);
+  float leftEff = (float)effectiveDistance(leftDistanceCm);
+  float rightEff = (float)effectiveDistance(rightDistanceCm);
+  float minSide = (leftEff < rightEff) ? leftEff : rightEff;
+
+  float frontRisk = 1.0f - (frontEff / 120.0f);
+  float sideRisk = 1.0f - (minSide / 120.0f);
+  float weighted = (frontRisk * 0.7f) + (sideRisk * 0.3f);
+  if (weighted < 0.0f) {
+    weighted = 0.0f;
+  }
+  if (weighted > 1.0f) {
+    weighted = 1.0f;
+  }
+  return weighted;
+}
+
 ManeuverPlan defaultPlan() {
   ManeuverPlan plan;
   plan.primary = MANEUVER_STOP;
@@ -321,6 +383,7 @@ ManeuverPlan defaultPlan() {
   plan.secondary = MANEUVER_STOP;
   plan.secondaryDurationMs = 0;
   plan.confidence = 0.0f;
+  plan.riskScore = estimateLocalRiskScore();
   plan.repeatedTrap = false;
   return plan;
 }
@@ -400,13 +463,37 @@ bool parsePlanFromJsonText(const String &modelText, ManeuverPlan &plan) {
   uint16_t primaryDuration = planDoc["primary_duration_ms"] | (uint16_t)STRAFE_DURATION_MS;
   uint16_t secondaryDuration = planDoc["secondary_duration_ms"] | (uint16_t)0;
   float confidence = planDoc["confidence"] | 0.0f;
+  float risk = planDoc["risk"] | estimateLocalRiskScore();
 
   plan.primary = parseManeuverType(primary);
   plan.primaryDurationMs = clampDuration(primaryDuration, STRAFE_DURATION_MS);
   plan.secondary = parseManeuverType(secondary);
   plan.secondaryDurationMs = secondaryDuration == 0 ? 0 : clampDuration(secondaryDuration, RESCAN_PAUSE_MS);
   plan.confidence = confidence;
+  if (risk < 0.0f) {
+    risk = 0.0f;
+  }
+  if (risk > 1.0f) {
+    risk = 1.0f;
+  }
+  plan.riskScore = risk;
   return true;
+}
+
+bool isPlanDirectionLeft(ManeuverType maneuver) {
+  return maneuver == MANEUVER_STRAFE_LEFT || maneuver == MANEUVER_TURN_LEFT_90;
+}
+
+bool isPlanDirectionRight(ManeuverType maneuver) {
+  return maneuver == MANEUVER_STRAFE_RIGHT || maneuver == MANEUVER_TURN_RIGHT_90;
+}
+
+bool plansDisagreeDirection(const ManeuverPlan &a, const ManeuverPlan &b) {
+  bool aLeft = isPlanDirectionLeft(a.primary);
+  bool aRight = isPlanDirectionRight(a.primary);
+  bool bLeft = isPlanDirectionLeft(b.primary);
+  bool bRight = isPlanDirectionRight(b.primary);
+  return (aLeft && bRight) || (aRight && bLeft);
 }
 
 void sanitizePlan(ManeuverPlan &plan, const ManeuverPlan &fallbackPlan) {
@@ -434,6 +521,12 @@ void sanitizePlan(ManeuverPlan &plan, const ManeuverPlan &fallbackPlan) {
 
   if (plan.confidence < MIN_LLM_CONFIDENCE) {
     plan = fallbackPlan;
+    return;
+  }
+
+  if (plansDisagreeDirection(plan, fallbackPlan) && plan.confidence < MIN_LLM_CONFIDENCE_FOR_DISAGREEMENT) {
+    plan = fallbackPlan;
+    return;
   }
 }
 
@@ -456,22 +549,27 @@ ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool
       "You are planning a safe indoor robot avoidance maneuver. "
       "Use only these maneuvers: STRAFE_LEFT, STRAFE_RIGHT, BACKWARD, TURN_LEFT_90, TURN_RIGHT_90, STOP, RESCAN. "
       "Safety rules: do not pick STOP unless fully blocked, use BACKWARD when trapped, and prefer the more open side. "
-      "Return JSON only with keys primary, primary_duration_ms, secondary, secondary_duration_ms, confidence, reason. "
+      "Return strict JSON only, no markdown, with keys primary, primary_duration_ms, secondary, secondary_duration_ms, confidence, risk, reason. "
       "Current distances cm: front=" + String(frontDistanceCm, 1) +
       ", left=" + String(leftDistanceCm, 1) +
       ", right=" + String(rightDistanceCm, 1) +
       ". Repeated trap=" + String(repeatedTrap ? "true" : "false") +
+      ". Front trend cm over recent history=" + String(frontTrendCm(), 1) +
+      ". Left-right oscillation count=" + String(detectPlanOscillationCount()) +
+      ". Last plan outcome=" + String(lastPlanOutcomeString()) +
+      ". Last plan front before=" + String(lastPlanFrontBeforeCm, 1) +
+      ", after=" + String(lastPlanFrontAfterCm, 1) +
       ". Baseline primary=" + String(maneuverTypeToString(fallbackPlan.primary)) +
       ", baseline secondary=" + String(maneuverTypeToString(fallbackPlan.secondary)) +
       ". Recent hazard history=" + buildHistorySummary() +
       ". Recent plans=" + buildRecentPlanSummary() +
-      ". Example JSON: {\"primary\":\"BACKWARD\",\"primary_duration_ms\":350,\"secondary\":\"TURN_LEFT_90\",\"secondary_duration_ms\":520,\"confidence\":0.82,\"reason\":\"repeated_trap\"}.";
+      ". Example JSON: {\"primary\":\"BACKWARD\",\"primary_duration_ms\":350,\"secondary\":\"TURN_LEFT_90\",\"secondary_duration_ms\":520,\"confidence\":0.82,\"risk\":0.74,\"reason\":\"repeated_trap\"}.";
 
   String body = String("{\"contents\":[{\"parts\":[{\"text\":\"") + prompt +
-                "\"}]}],\"generationConfig\":{\"temperature\":0.15,\"maxOutputTokens\":120}}";
+          "\"}]}],\"generationConfig\":{\"temperature\":0.15,\"maxOutputTokens\":160,\"responseMimeType\":\"application/json\"}}";
 
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(GEMINI_HTTP_TIMEOUT_MS);
+  http.setTimeout(GEMINI_HTTP_TIMEOUT_TIGHT_MS);
   int statusCode = http.POST(body);
   String responseBody = http.getString();
   http.end();
@@ -643,26 +741,49 @@ bool shouldForceBackward(unsigned long nowMs) {
   return hazardBurstCount >= HAZARD_BURST_THRESHOLD;
 }
 
-void executeManeuver(ManeuverType maneuver, uint16_t durationMs) {
+int computeManeuverSpeed(const ManeuverPlan &plan) {
+  int speed = TURN_SPEED;
+
+  // Lower speed when risk is high or confidence is modest to reduce collision risk.
+  if (plan.riskScore >= 0.75f || plan.confidence < 0.65f) {
+    speed -= 40;
+  } else if (plan.riskScore >= 0.55f) {
+    speed -= 20;
+  }
+
+  if (plan.primary == MANEUVER_BACKWARD) {
+    speed -= 15;
+  }
+
+  if (speed < 165) {
+    speed = 165;
+  }
+  if (speed > TURN_SPEED) {
+    speed = TURN_SPEED;
+  }
+  return speed;
+}
+
+void executeManeuver(ManeuverType maneuver, uint16_t durationMs, int speed) {
   switch (maneuver) {
     case MANEUVER_STRAFE_LEFT:
-      myCar.Move(Move_Left, TURN_SPEED);
+      myCar.Move(Move_Left, speed);
       delay(durationMs);
       break;
     case MANEUVER_STRAFE_RIGHT:
-      myCar.Move(Move_Right, TURN_SPEED);
+      myCar.Move(Move_Right, speed);
       delay(durationMs);
       break;
     case MANEUVER_BACKWARD:
-      myCar.Move(Backward, TURN_SPEED);
+      myCar.Move(Backward, speed);
       delay(durationMs);
       break;
     case MANEUVER_TURN_LEFT_90:
-      myCar.Move(Contrarotate, TURN_SPEED);
+      myCar.Move(Contrarotate, speed);
       delay(TURN_90_DURATION_MS);
       break;
     case MANEUVER_TURN_RIGHT_90:
-      myCar.Move(Clockwise, TURN_SPEED);
+      myCar.Move(Clockwise, speed);
       delay(TURN_90_DURATION_MS);
       break;
     case MANEUVER_RESCAN:
@@ -679,11 +800,12 @@ void executeManeuver(ManeuverType maneuver, uint16_t durationMs) {
 }
 
 void executePlan(const ManeuverPlan &plan) {
-  executeManeuver(plan.primary, plan.primaryDurationMs);
+  int maneuverSpeed = computeManeuverSpeed(plan);
+  executeManeuver(plan.primary, plan.primaryDurationMs, maneuverSpeed);
   rememberPlan(plan.primary);
 
   if (plan.secondary != MANEUVER_STOP) {
-    executeManeuver(plan.secondary, plan.secondaryDurationMs);
+    executeManeuver(plan.secondary, plan.secondaryDurationMs, maneuverSpeed);
     rememberPlan(plan.secondary);
   }
 
@@ -762,7 +884,22 @@ void loop() {
       plan = queryGeminiForNavigationPlan(localPlan, repeatedTrap);
     }
 
+    lastPlanFrontBeforeCm = frontDistanceCm;
     executePlan(plan);
+    refreshHazardScanSnapshot();
+    lastPlanFrontAfterCm = frontDistanceCm;
+    if (isValidDistance(lastPlanFrontBeforeCm) && isValidDistance(lastPlanFrontAfterCm)) {
+      float gain = lastPlanFrontAfterCm - lastPlanFrontBeforeCm;
+      if (gain >= PLAN_IMPROVEMENT_MARGIN_CM) {
+        lastPlanOutcome = 1;
+      } else if (gain <= -PLAN_IMPROVEMENT_MARGIN_CM) {
+        lastPlanOutcome = -1;
+      } else {
+        lastPlanOutcome = 0;
+      }
+    } else {
+      lastPlanOutcome = 0;
+    }
     lastHazardDecisionMs = nowMs;
   }
 
