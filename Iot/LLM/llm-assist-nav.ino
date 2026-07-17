@@ -9,15 +9,40 @@
 #include <vehicle.h>
 #include "gemini_config.h"
 #include "wifi_config.h"
+
+/*
+  LLM-Assisted Indoor Navigation (ESP32 + Ultrasonic + Servo + Robot Chassis)
+
+  What this sketch does:
+  1) Continuously drives the robot forward while scanning left/front/right distance with
+    an ultrasonic sensor mounted on a pan servo.
+  2) Detects hazards based on front clearance and freshness of sensor data.
+  3) Builds a local, safety-first maneuver plan (strafe, turn, reverse, rescan).
+  4) Optionally asks Gemini for a refined plan when Wi-Fi is available, but keeps strict
+    local safety guardrails and falls back to local logic whenever confidence is low or
+    responses are invalid.
+  5) Executes one or two-step maneuvers, then rescans and records outcome quality so
+    future decisions can avoid oscillation/trap patterns.
+
+  High-level design goals:
+  - Prefer collision avoidance and recovery over aggressive movement.
+  - Handle repeated trap patterns (e.g., left-right ping-pong near obstacles).
+  - Keep behavior deterministic even when cloud/LLM is unavailable.
+*/
+
 vehicle myCar;
 ultrasonic sensor;
 Servo panServo;
+
+// Action is a simple left/right/stop/backward direction abstraction used by fallback logic.
 enum Action {
   ACTION_STOP = 0,
   ACTION_LEFT,
   ACTION_RIGHT,
   ACTION_BACKWARD,
 };
+
+// ManeuverType is the concrete motion primitive vocabulary used in executable plans.
 enum ManeuverType {
   MANEUVER_STOP = 0,
   MANEUVER_STRAFE_LEFT,
@@ -27,12 +52,16 @@ enum ManeuverType {
   MANEUVER_TURN_RIGHT_90,
   MANEUVER_RESCAN,
 };
+
+// Captures one L/F/R measurement set used for trap/repetition detection.
 struct HazardSnapshot {
   float leftCm;
   float frontCm;
   float rightCm;
   unsigned long atMs;
 };
+
+// Stores a two-step maneuver decision with confidence/risk metadata.
 struct ManeuverPlan {
   ManeuverType primary;
   uint16_t primaryDurationMs;
@@ -42,15 +71,21 @@ struct ManeuverPlan {
   float riskScore;
   bool repeatedTrap;
 };
+
+// Speed tuning for nominal movement and turning behavior.
 const int FORWARD_SPEED = 255;
 const int TURN_SPEED = 240;
 const unsigned long TURN_90_DURATION_MS = 520;
+
+// Hardware pin mapping.
 const int TRIG_PIN = 13;
 const int ECHO_PIN = 14;
 const int ULTRASONIC_PAN_PIN = 27;
 const int LEFT_LED_PIN = 2;
 const int RIGHT_LED_PIN = 12;
 const bool LED_ACTIVE_HIGH = true;
+
+// Servo scan geometry and stepping behavior.
 const int PAN_CENTER_TRIM_DEG = 0;
 const int PAN_CENTER_DEG = 90 + PAN_CENTER_TRIM_DEG;
 const int PAN_HALF_ARC_DEG = 85;
@@ -59,6 +94,8 @@ const int PAN_RIGHT_DEG = ((PAN_CENTER_DEG - PAN_HALF_ARC_DEG) < 0) ? 0 : (PAN_C
 const int PAN_STEP_DEG = 5;
 const unsigned long PAN_STEP_INTERVAL_MS = 22;
 const int PAN_CENTER_BUCKET_DEG = 18;
+
+// Distance thresholds and validation rules (cm).
 const float ULTRASONIC_ALERT_CM = 30.0f;
 const float ULTRASONIC_MIN_VALID_CM = 4.0f;
 const float EMERGENCY_REVERSE_CM = 18.0f;
@@ -67,6 +104,8 @@ const float WALL_HEADON_SIDE_CM = 42.0f;
 const float WALL_HEADON_SIDE_BALANCE_CM = 12.0f;
 const float WIDE_OPEN_DIFF_CM = 18.0f;
 const float REPEAT_PATTERN_TOLERANCE_CM = 9.0f;
+
+// Timing for sampling, maneuvers, cloud I/O, and hazard debouncing.
 const unsigned long SENSOR_INTERVAL_MS = 70;
 const unsigned long STRAFE_DURATION_MS = 450;
 const unsigned long BACKUP_DURATION_MS = 380;
@@ -82,6 +121,8 @@ const unsigned long RESCAN_PAUSE_MS = 140;
 const unsigned long THINK_LED_ON_MS = 140;
 const unsigned long THINK_LED_OFF_MS = 80;
 const unsigned long DECISION_LED_MS = 220;
+
+// Conservative defaults and planning memory sizes.
 const int SAFE_UNKNOWN_DISTANCE_CM = 120;
 const uint8_t NAV_HISTORY_SIZE = 8;
 const uint8_t TRAP_REPEAT_THRESHOLD = 3;
@@ -90,6 +131,8 @@ const float MIN_LLM_CONFIDENCE_FOR_DISAGREEMENT = 0.72f;
 const float PLAN_IMPROVEMENT_MARGIN_CM = 5.0f;
 const uint16_t MIN_MANEUVER_DURATION_MS = 180;
 const uint16_t MAX_MANEUVER_DURATION_MS = 700;
+
+// Runtime state for hazard sensing/decision cadence.
 bool obstacleNearby = false;
 bool previousObstacleNearby = false;
 unsigned long lastSensorMs = 0;
@@ -98,6 +141,8 @@ unsigned long lastHazardDecisionMs = 0;
 unsigned long hazardBurstWindowStartMs = 0;
 uint8_t hazardBurstCount = 0;
 unsigned long hazardClearSinceMs = 0;
+
+// Runtime state for servo sweep and latest sampled distances.
 Action lastNonStopDecision = ACTION_LEFT;
 bool panServoReady = false;
 int panCurrentDeg = PAN_CENTER_DEG;
@@ -106,6 +151,8 @@ float leftDistanceCm = -1.0f;
 float frontDistanceCm = -1.0f;
 float rightDistanceCm = -1.0f;
 unsigned long frontUpdatedMs = 0;
+
+// Short-term memory of environment and recent decisions for anti-oscillation logic.
 HazardSnapshot navHistory[NAV_HISTORY_SIZE];
 uint8_t navHistoryCount = 0;
 uint8_t navHistoryWriteIndex = 0;
@@ -114,11 +161,15 @@ uint8_t recentPlanWriteIndex = 0;
 int8_t lastPlanOutcome = 0;
 float lastPlanFrontBeforeCm = -1.0f;
 float lastPlanFrontAfterCm = -1.0f;
+
+// Writes both direction LEDs in one call, honoring active-high/low wiring.
 void setBothLeds(bool on) {
   uint8_t level = on ? (LED_ACTIVE_HIGH ? HIGH : LOW) : (LED_ACTIVE_HIGH ? LOW : HIGH);
   digitalWrite(LEFT_LED_PIN, level);
   digitalWrite(RIGHT_LED_PIN, level);
 }
+
+// Short blink pattern used while waiting on Gemini planning response.
 void flashGeminiThinkingLeds() {
   setBothLeds(true);
   delay(THINK_LED_ON_MS);
@@ -128,6 +179,8 @@ void flashGeminiThinkingLeds() {
   delay(THINK_LED_ON_MS);
   setBothLeds(false);
 }
+
+// Briefly flashes the LED that matches chosen turn/strafe direction.
 void flashDecisionDirectionLed(ManeuverType maneuver) {
   int pin = -1;
   if (maneuver == MANEUVER_STRAFE_LEFT || maneuver == MANEUVER_TURN_LEFT_90) {
@@ -144,6 +197,8 @@ void flashDecisionDirectionLed(ManeuverType maneuver) {
   delay(DECISION_LED_MS);
   digitalWrite(pin, offLevel);
 }
+
+// Connects to Wi-Fi once at startup; local planner remains functional if this fails.
 void connectWiFi() {
   Serial.print("Connecting to WiFi");
   WiFi.mode(WIFI_STA);
@@ -161,15 +216,21 @@ void connectWiFi() {
     Serial.println("WiFi not connected. Navigation falls back to local planner");
   }
 }
+
+// Filters out impossible/too-close sensor values that should not drive decisions.
 bool isValidDistance(float distanceCm) {
   return distanceCm >= ULTRASONIC_MIN_VALID_CM;
 }
+
+// Converts invalid readings into a safe "assume open" value for scoring math.
 int effectiveDistance(float distanceCm) {
   if (isValidDistance(distanceCm)) {
     return (int)distanceCm;
   }
   return SAFE_UNKNOWN_DISTANCE_CM;
 }
+
+// Picks the better side to turn based on effective clearance; alternates on ties.
 Action chooseFallbackTurn() {
   int leftEff = effectiveDistance(leftDistanceCm);
   int rightEff = effectiveDistance(rightDistanceCm);
@@ -187,6 +248,8 @@ ManeuverType actionToStrafeManeuver(Action action) {
 ManeuverType actionToTurnManeuver(Action action) {
   return action == ACTION_LEFT ? MANEUVER_TURN_LEFT_90 : MANEUVER_TURN_RIGHT_90;
 }
+
+// Creates a one-step lateral move followed by a pause/rescan.
 ManeuverPlan buildStrafePlan(Action action, uint16_t durationMs) {
   ManeuverPlan plan = defaultPlan();
   plan.primary = actionToStrafeManeuver(action);
@@ -196,6 +259,8 @@ ManeuverPlan buildStrafePlan(Action action, uint16_t durationMs) {
   plan.confidence = 0.0f;
   return plan;
 }
+
+// Creates a fixed-duration 90-degree turn followed by a pause/rescan.
 ManeuverPlan buildTurnPlan(Action action) {
   ManeuverPlan plan = defaultPlan();
   plan.primary = actionToTurnManeuver(action);
@@ -205,6 +270,8 @@ ManeuverPlan buildTurnPlan(Action action) {
   plan.confidence = 0.0f;
   return plan;
 }
+
+// Creates a recovery sequence: reverse, then rotate to escape local minima/traps.
 ManeuverPlan buildRecoveryPlan(Action action) {
   ManeuverPlan plan = defaultPlan();
   plan.primary = MANEUVER_BACKWARD;
@@ -214,6 +281,8 @@ ManeuverPlan buildRecoveryPlan(Action action) {
   plan.confidence = 0.0f;
   return plan;
 }
+
+// Serializes plan fields into compact text for the Gemini prompt context.
 String planToPromptText(const char *label, const ManeuverPlan &plan) {
   return String(label) + "={primary:" + maneuverTypeToString(plan.primary) +
          ",primary_ms:" + String(plan.primaryDurationMs) +
@@ -222,6 +291,8 @@ String planToPromptText(const char *label, const ManeuverPlan &plan) {
          ",confidence:" + String(plan.confidence, 2) +
          ",risk:" + String(plan.riskScore, 2) + "}";
 }
+
+// Heuristic local scorer for candidate maneuvers based on clearance, trend, and oscillation.
 float scoreLocalPlanCandidate(const ManeuverPlan &candidate, int leftEff, int frontEff, int rightEff, bool repeatedTrap, uint8_t oscillationCount, float frontTrendCmValue) {
   float score = 0.0f;
   int preferredSideEff = 0;
@@ -303,6 +374,8 @@ float scoreLocalPlanCandidate(const ManeuverPlan &candidate, int leftEff, int fr
   }
   return score;
 }
+
+// Detects a symmetric near-wall condition where reverse+turn is usually safest.
 bool isHeadOnWall(float frontCm, float leftCm, float rightCm) {
   if (!isValidDistance(frontCm) || !isValidDistance(leftCm) || !isValidDistance(rightCm)) {
     return false;
@@ -314,6 +387,8 @@ bool isHeadOnWall(float frontCm, float leftCm, float rightCm) {
   bool sideBalanced = (fabs(leftCm - rightCm) <= WALL_HEADON_SIDE_BALANCE_CM);
   return bothSidesClose && sideBalanced;
 }
+
+// String helpers for logs/prompting.
 const char *maneuverTypeToString(ManeuverType maneuver) {
   switch (maneuver) {
     case MANEUVER_STRAFE_LEFT:
@@ -332,6 +407,8 @@ const char *maneuverTypeToString(ManeuverType maneuver) {
       return "STOP";
   }
 }
+
+// Robust parser that accepts canonical tokens and common directional synonyms.
 ManeuverType parseManeuverType(const String &text) {
   String normalized = text;
   normalized.toUpperCase();
@@ -356,16 +433,22 @@ ManeuverType parseManeuverType(const String &text) {
   }
   return MANEUVER_STOP;
 }
+
+// Keeps plan durations within practical and safe motion bounds.
 uint16_t clampDuration(uint16_t value, uint16_t fallbackMs) {
   if (value < MIN_MANEUVER_DURATION_MS || value > MAX_MANEUVER_DURATION_MS) {
     return fallbackMs;
   }
   return value;
 }
+
+// Stores the last few executed maneuvers to detect left-right oscillation patterns.
 void rememberPlan(ManeuverType maneuver) {
   recentPlans[recentPlanWriteIndex] = maneuver;
   recentPlanWriteIndex = (recentPlanWriteIndex + 1) % 4;
 }
+
+// Adds one hazard snapshot to a ring buffer for repeat-pattern analysis.
 void recordHazardSnapshot(float leftCm, float frontCm, float rightCm, unsigned long nowMs) {
   navHistory[navHistoryWriteIndex].leftCm = leftCm;
   navHistory[navHistoryWriteIndex].frontCm = frontCm;
@@ -376,11 +459,15 @@ void recordHazardSnapshot(float leftCm, float frontCm, float rightCm, unsigned l
     navHistoryCount++;
   }
 }
+
+// Compares new snapshot to previous snapshots with tolerance for noisy sensors.
 bool snapshotSimilar(const HazardSnapshot &a, float leftCm, float frontCm, float rightCm) {
   return fabs(a.leftCm - leftCm) <= REPEAT_PATTERN_TOLERANCE_CM &&
          fabs(a.frontCm - frontCm) <= REPEAT_PATTERN_TOLERANCE_CM &&
          fabs(a.rightCm - rightCm) <= REPEAT_PATTERN_TOLERANCE_CM;
 }
+
+// Flags likely trap states when several recent snapshots look essentially the same.
 bool detectRepeatedTrap(float leftCm, float frontCm, float rightCm) {
   uint8_t similarCount = 0;
   for (uint8_t i = 0; i < navHistoryCount; ++i) {
@@ -390,6 +477,8 @@ bool detectRepeatedTrap(float leftCm, float frontCm, float rightCm) {
   }
   return similarCount >= TRAP_REPEAT_THRESHOLD;
 }
+
+// Produces CSV-like summary of recent plans for prompt/debug visibility.
 String buildRecentPlanSummary() {
   String summary;
   for (uint8_t i = 0; i < 4; ++i) {
@@ -401,6 +490,8 @@ String buildRecentPlanSummary() {
   }
   return summary;
 }
+
+// Produces compact rolling L/F/R history string for logs and LLM grounding.
 String buildHistorySummary() {
   String summary;
   uint8_t start = (navHistoryCount == NAV_HISTORY_SIZE) ? navHistoryWriteIndex : 0;
@@ -418,6 +509,8 @@ String buildHistorySummary() {
   }
   return summary;
 }
+
+// Positive means front clearance improved over history window; negative means worsening.
 float frontTrendCm() {
   if (navHistoryCount < 2) {
     return 0.0f;
@@ -426,6 +519,8 @@ float frontTrendCm() {
   uint8_t oldest = (navHistoryCount == NAV_HISTORY_SIZE) ? navHistoryWriteIndex : 0;
   return navHistory[newest].frontCm - navHistory[oldest].frontCm;
 }
+
+// Counts directional flips (left<->right) in the recent plan buffer.
 uint8_t detectPlanOscillationCount() {
   uint8_t swaps = 0;
   for (uint8_t i = 1; i < 4; ++i) {
@@ -443,6 +538,8 @@ uint8_t detectPlanOscillationCount() {
   }
   return swaps;
 }
+
+// Human-readable label of previous maneuver result quality.
 const char *lastPlanOutcomeString() {
   if (lastPlanOutcome > 0) {
     return "improved_clearance";
@@ -452,6 +549,8 @@ const char *lastPlanOutcomeString() {
   }
   return "unknown";
 }
+
+// Estimates local collision risk in [0..1] with heavier front weighting.
 float estimateLocalRiskScore() {
   float frontEff = (float)effectiveDistance(frontDistanceCm);
   float leftEff = (float)effectiveDistance(leftDistanceCm);
@@ -468,6 +567,8 @@ float estimateLocalRiskScore() {
   }
   return weighted;
 }
+
+// Returns a conservative default (mostly stop) plan scaffold with current risk estimate.
 ManeuverPlan defaultPlan() {
   ManeuverPlan plan;
   plan.primary = MANEUVER_STOP;
@@ -479,6 +580,8 @@ ManeuverPlan defaultPlan() {
   plan.repeatedTrap = false;
   return plan;
 }
+
+// Pure local planner used both as baseline and as fallback when cloud planning is unavailable.
 ManeuverPlan chooseLocalPlan(bool repeatedTrap) {
   ManeuverPlan plan = defaultPlan();
   plan.repeatedTrap = repeatedTrap;
@@ -535,6 +638,8 @@ ManeuverPlan chooseLocalPlan(bool repeatedTrap) {
   bestPlan.confidence = bestScore;
   return bestPlan;
 }
+
+// Extracts the first complete JSON object from model text that may include extra wrapping.
 bool extractFirstJsonObject(const String &input, String &jsonText) {
   int start = input.indexOf('{');
   if (start < 0) {
@@ -555,6 +660,8 @@ bool extractFirstJsonObject(const String &input, String &jsonText) {
   }
   return false;
 }
+
+// Parses model JSON into ManeuverPlan and normalizes numeric bounds.
 bool parsePlanFromJsonText(const String &modelText, ManeuverPlan &plan) {
   String jsonText;
   if (!extractFirstJsonObject(modelText, jsonText)) {
@@ -593,6 +700,8 @@ bool isPlanDirectionLeft(ManeuverType maneuver) {
 bool isPlanDirectionRight(ManeuverType maneuver) {
   return maneuver == MANEUVER_STRAFE_RIGHT || maneuver == MANEUVER_TURN_RIGHT_90;
 }
+
+// Returns true when two plans choose opposite lateral directions.
 bool plansDisagreeDirection(const ManeuverPlan &a, const ManeuverPlan &b) {
   bool aLeft = isPlanDirectionLeft(a.primary);
   bool aRight = isPlanDirectionRight(a.primary);
@@ -600,6 +709,8 @@ bool plansDisagreeDirection(const ManeuverPlan &a, const ManeuverPlan &b) {
   bool bRight = isPlanDirectionRight(b.primary);
   return (aLeft && bRight) || (aRight && bLeft);
 }
+
+// Applies safety guardrails to LLM output and falls back when output is weak/risky.
 void sanitizePlan(ManeuverPlan &plan, const ManeuverPlan &fallbackPlan) {
   if (plan.primary == MANEUVER_STOP && fallbackPlan.primary != MANEUVER_STOP) {
     plan = fallbackPlan;
@@ -627,6 +738,8 @@ void sanitizePlan(ManeuverPlan &plan, const ManeuverPlan &fallbackPlan) {
     return;
   }
 }
+
+// Calls Gemini for plan refinement; never bypasses local fallbacks/safety sanitization.
 ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool repeatedTrap) {
   flashGeminiThinkingLeds();
   if (WiFi.status() != WL_CONNECTED) {
@@ -675,6 +788,7 @@ ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool
       ". Recent hazard history=" + buildHistorySummary() +
       ". Recent plans=" + buildRecentPlanSummary() +
       ". Example JSON: {\"primary\":\"BACKWARD\",\"primary_duration_ms\":350,\"secondary\":\"TURN_LEFT_90\",\"secondary_duration_ms\":520,\"confidence\":0.82,\"risk\":0.74,\"reason\":\"recovery_from_trap\"}.";
+  // responseMimeType requests JSON, but code still validates/guards against malformed output.
   String body = String("{\"contents\":[{\"parts\":[{\"text\":\"") + prompt +
           "\"}]}],\"generationConfig\":{\"temperature\":0.15,\"maxOutputTokens\":160,\"responseMimeType\":\"application/json\"}}";
   http.addHeader("Content-Type", "application/json");
@@ -712,6 +826,8 @@ ManeuverPlan queryGeminiForNavigationPlan(const ManeuverPlan &fallbackPlan, bool
   Serial.println(plan.confidence, 2);
   return plan;
 }
+
+// Returns pan servo to center for forward-facing sensing and cleaner drive state.
 void movePanToCenter() {
   if (!panServoReady) {
     return;
@@ -719,6 +835,8 @@ void movePanToCenter() {
   panCurrentDeg = PAN_CENTER_DEG;
   panServo.write(panCurrentDeg);
 }
+
+// Takes an explicit left-right-front snapshot used right before/after maneuvers.
 void refreshHazardScanSnapshot() {
   if (!panServoReady) {
     float front = sensor.Ranging();
@@ -760,6 +878,8 @@ void refreshHazardScanSnapshot() {
   Serial.print("/");
   Serial.println(rightDistanceCm, 1);
 }
+
+// Runs continuous servo sweep so periodic samples can approximate L/F/R zones.
 void updatePanSweep(unsigned long nowMs) {
   if (!panServoReady) {
     return;
@@ -783,6 +903,8 @@ void updatePanSweep(unsigned long nowMs) {
   }
   panServo.write(panCurrentDeg);
 }
+
+// Updates rolling scan values and derives current hazard state from fresh front data.
 void updateScanAndHazard() {
   unsigned long nowMs = millis();
   updatePanSweep(nowMs);
@@ -819,6 +941,8 @@ void updateScanAndHazard() {
   Serial.print(" cm | hazard: ");
   Serial.println(obstacleNearby ? "YES" : "NO");
 }
+
+// Escalates to forced reverse when hazards repeat in a short burst window.
 bool shouldForceBackward(unsigned long nowMs) {
   if (hazardBurstWindowStartMs == 0 || (nowMs - hazardBurstWindowStartMs) > HAZARD_BURST_WINDOW_MS) {
     hazardBurstWindowStartMs = nowMs;
@@ -830,6 +954,8 @@ bool shouldForceBackward(unsigned long nowMs) {
   }
   return hazardBurstCount >= HAZARD_BURST_THRESHOLD;
 }
+
+// Converts confidence/risk into safer motor speed for the selected maneuver.
 int computeManeuverSpeed(const ManeuverPlan &plan) {
   int speed = TURN_SPEED;
   // Lower speed when risk is high or confidence is modest to reduce collision risk.
@@ -849,6 +975,8 @@ int computeManeuverSpeed(const ManeuverPlan &plan) {
   }
   return speed;
 }
+
+// Executes a single motion primitive for a bounded duration, then hard-stops.
 void executeManeuver(ManeuverType maneuver, uint16_t durationMs, int speed) {
   switch (maneuver) {
     case MANEUVER_STRAFE_LEFT:
@@ -883,6 +1011,8 @@ void executeManeuver(ManeuverType maneuver, uint16_t durationMs, int speed) {
   }
   myCar.Move(Stop, 0);
 }
+
+// Executes primary and optional secondary maneuver; updates directional memory.
 void executePlan(const ManeuverPlan &plan) {
   int maneuverSpeed = computeManeuverSpeed(plan);
   executeManeuver(plan.primary, plan.primaryDurationMs, maneuverSpeed);
@@ -897,6 +1027,8 @@ void executePlan(const ManeuverPlan &plan) {
     lastNonStopDecision = ACTION_RIGHT;
   }
 }
+
+// Hardware/network initialization and initial calibration logging.
 void setup() {
   Serial.begin(115200);
   pinMode(LEFT_LED_PIN, OUTPUT);
@@ -921,6 +1053,8 @@ void setup() {
   connectWiFi();
   Serial.println("LLM-assisted navigation planner enabled");
 }
+
+// Main control loop: scan -> detect hazard -> decide plan -> execute -> learn outcome.
 void loop() {
   updateScanAndHazard();
   unsigned long nowMs = millis();
@@ -930,6 +1064,7 @@ void loop() {
     recordHazardSnapshot(leftDistanceCm, frontDistanceCm, rightDistanceCm, nowMs);
     ManeuverPlan plan;
     bool repeatedTrap = detectRepeatedTrap(leftDistanceCm, frontDistanceCm, rightDistanceCm);
+    // These branches are hard safety overrides that bypass LLM planning entirely.
     if (isHeadOnWall(frontDistanceCm, leftDistanceCm, rightDistanceCm)) {
       plan = defaultPlan();
       plan.primary = MANEUVER_BACKWARD;
@@ -955,6 +1090,7 @@ void loop() {
       plan.confidence = 1.0f;
       Serial.println("Burst hazard escalation: local forced plan");
     } else {
+      // Normal path: create local baseline plan, then allow Gemini to refine within guardrails.
       ManeuverPlan localPlan = chooseLocalPlan(repeatedTrap);
       plan = queryGeminiForNavigationPlan(localPlan, repeatedTrap);
     }
@@ -963,6 +1099,7 @@ void loop() {
     refreshHazardScanSnapshot();
     lastPlanFrontAfterCm = frontDistanceCm;
     if (isValidDistance(lastPlanFrontBeforeCm) && isValidDistance(lastPlanFrontAfterCm)) {
+      // Post-action scoring tracks whether front clearance got better/worse for future decisions.
       float gain = lastPlanFrontAfterCm - lastPlanFrontBeforeCm;
       if (gain >= PLAN_IMPROVEMENT_MARGIN_CM) {
         lastPlanOutcome = 1;
@@ -988,6 +1125,7 @@ void loop() {
     hazardClearSinceMs = 0;
   }
   previousObstacleNearby = obstacleNearby;
+  // Cruise forward only when no front hazard is active.
   if (obstacleNearby) {
     myCar.Move(Stop, 0);
   } else {
