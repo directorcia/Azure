@@ -1,0 +1,325 @@
+Drivers
+-------
+## Nvidia studio driver 
+https://www.nvidia.com/en-us/drivers
+# GeForce etc 5080 win 11 while 616.92
+https://www.nvidia.com/en-us/drivers/details/278455/
+
+Winget install microsoft.powershell
+
+Set-ExecutionPolicy Unrestricted -Scope currentuser -Force
+
+Winget install Microsoft.vcredist.2015+.x64
+
+Foundry Local
+-------------
+winget install Microsoft.FoundryLocal
+
+Foundry --version
+
+Foundry model list
+
+Foundry server status # Get Port number
+Navigate to URL
+
+Foundry run phi-4-mini
+
+foundry chat phi-4-mini
+
+Foundry server status #get port
+foundry config set port 5272 # set static port
+foundry server restart
+
+---- PS Start ----
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:63572/v1/models"
+
+$body = @{
+    model = "Phi-4-mini-instruct-cuda-gpu"
+    messages = @(
+        @{
+            role = "user"
+            content = "Hello"
+        }
+    )
+} | ConvertTo-Json -Depth 10
+----- PS End ----
+
+---- Load Start ----
+Window1
+PowerShell
+	nvidia-smi -l 1
+
+Window 2
+PowerShell
+	foundry server status
+
+Window 3
+PowerShell
+	foundry model run qwen2.5-7b
+
+Ask:
+	Write a 500 word article about Microsoft Copilot.
+
+Watch:
+	VRAM usage jump
+	GPU utilisation increase
+	Power consumption rise
+
+If you only see:
+	GPU Util 0%
+and the response is slow, the model is likely running primarily on CPU.
+--- Load End ---
+
+
+Docker
+------
+Winget install microsoft.wsl
+
+Winget install docker.dockerdesktop
+
+After it completes:
+	1. Reboot (or log out and back in).
+	2. Launch Docker Desktop from the Start Menu.
+	3. Accept the licence agreement.
+	4. Allow Docker to configure WSL 2 if prompted.
+
+docker pull ghcr.io/open-webui/open-webui:main
+
+docker ps # check running
+
+Docker version
+
+#Generate persistent key
+
+$bytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$secret = [Convert]::
+$secret
+
+# Generate persistent key (32 random bytes)
+
+$bytes = New-Object byte[] 32
+
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+# Convert to Base64
+$secret = [Convert]::ToBase64String($bytes)
+
+Write-Host "Secret Key:"
+Write-Host $secret
+
+docker run -d `
+  -p 3000:8080 `
+  --add-host=host.docker.internal:host-gateway `
+  -v open-webui:/app/backend/data `
+  -e WEBUI_SECRET_KEY=PASTE_YOUR_SECRET_HERE `
+  --name open-webui `
+  --restart always `
+  ghcr.io/open-webui/open-webui:main
+
+http://localhost:3000
+
+OpenWeb-UI
+
+Foundry server status
+http://localhost:5272
+Foundry model run phi-4-mini
+Invoke-WebRequest http://localhost:<PORT>/openai/status
+	/v1/chat/completions
+	/openai/status
+docker start open-webui
+http://localhost:3000
+Inside Open WebUI:
+	Profile
+	Admin Settings
+	Connections
+	Enable:
+		Direct Connections
+
+	Settings
+	Connections
+	Manage Direct Connections
+	+
+	http://localhost:<PORT>/v1
+	Authentication - None
+	Refresh Open WebUI
+
+Sign in as admin.
+Click Admin Panel
+Select Settings
+Select Connections (or External Connections depending on version)
+Add an OpenAI-compatible endpoint.
+Use:
+API Base URL:
+http://host.docker.internal:53878/v1
+
+Ensure foundry model loaded
+Use model in openwebui by selecting
+
+
+Web search
+Admin
+	Settings
+	Web Search
+	DDG
+
+Admin
+	Models
+	Edit
+
+✅ Web Search
+✅ File Upload
+✅ File Context
+✅ Built-in Tools
+✅ Citations
+
+Built-in Tools:
+
+✅ Web Search
+✅ Files
+✅ Chat History
+✅ Notes
+✅ Knowledge base
+
+❌ Calendar
+❌ Automations
+❌ Task Management
+❌ Notifications
+❌ Sub-agents
+❌ Memory
+
+Prompt -  List all available tools.
+
+docker run -d --name searxng -p 8081:8080 searxng/searxng
+
+Admin
+Web search
+	Search Engine: SearXNG
+	Query URL: http://host.docker.internal:8081/search?q=<query>
+
+
+Knowledge base
+Workspace
+Knowledge
+	Create # new knowledge base
++
+Upload files
+Edit models
+Models
+→ qwen3:14b
+→ Select Knowledge
+	- Add knowledge base for default
+
+
+
+Ollama
+
+winget install Ollama.Ollama
+
+ollama --version
+
+ollama pull qwen3.8
+
+Confirm it's running at http://localhost:11434
+
+Inside Open WebUI:
+	Profile
+	Admin Settings
+	Connections
+	Enable:
+		Direct Connections
+
+	Settings
+	Connections
+	Manage Direct Connections
+	+
+	http://localhost:11434/v1
+	Authentication - None
+Refresh Open WebUI
+
+
+Visual Studio Code
+winget install Git.Git
+Winget install Microsoft.VisualStudioCode
+Login in with Github
+Ollama extension
+Microsoft Foundry Toolkit
+	code --install-extension ms-windows-ai-studio.windows-ai-studio
+	code --install-extension GitHub.copilot
+code --install-extension GitHub.copilot-chat
+Restart
+Update ollama context window
+
+N8N
+
+docker volume create n8n_data
+
+docker run -d --name n8n -p 5678:5678 -v n8n_data:/home/node/.n8n --restart unless-stopped n8nio/n8n
+
+http://localhost:5678
+
+Option 2: Add AI models
+Ollama
+In n8n:
+
+Credentials
+→ OpenAI Compatible
+Use:
+
+Base URL:
+http://host.docker.internal:11434/v1
+
+Model:
+qwen3:14b
+You may need:
+
+API Key:
+dummy
+depending on the node.
+
+Foundry Local
+Once you've pinned Foundry to a permanent port:
+
+http://host.docker.internal:5272/v1
+you can add it as another OpenAI-compatible provider.
+
+
+Copilot CLI
+winget install GitHub.Copilot
+winget install OpenJS.NodeJS.LTS
+npm install -g @microsoft/workiq
+/plugin marketplace add microsoft/work-iq
+/plugin install workiq@work-iq
+workiq auth login
+workiq auth consent
+Workiq accept-eula
+Workiq mcp
+workiq ask -q "What meetings do I have today?"
+
+
+
+Openclaw
+
+Hermes
+
+Workiq
+Sharepoint search connector
+
+Os mantic appliance - https://github.com/Osmantic/ODS
+
+HWiNFO64 - HWiNFO - Free System Information, Monitoring and Diagnostics
+
+GitHub - ArcadeRenegade/SidebarDiagnostics: A simple sidebar for Windows desktop that displays hardware diagnostic information. · GitHub
+
+while ($true) {
+	Clear-Host
+	nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw --format=csv
+Start-Sleep 1
+}
+
+Opencode
+
+	npm install -g opencode-ai
+	OpenCode | The open source AI coding agent
+
+
