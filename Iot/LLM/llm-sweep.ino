@@ -1,3 +1,13 @@
+// ESP32 rover navigation sketch.
+//
+// High-level behavior:
+// - Continuously sweep a forward-facing ultrasonic sensor across left/front/right.
+// - Maintain short-lived "radar" buckets for those directions.
+// - Drive forward when the path is clear.
+// - Stop immediately when hazards are detected and choose a bounded escape maneuver.
+// - Optionally ask Gemini for a turn decision only when the local data is fresh but ambiguous.
+// - Fall back to fully local safety logic whenever Wi-Fi, sensor quality, or response timing is not good enough.
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ESP32Servo.h>
@@ -9,9 +19,13 @@
 #include <vehicle.h>
 #include "gemini_config.h"
 #include "wifi_config.h"
+
+// Hardware abstractions for the ultrasonic sensor, motor chassis, and panning servo.
 ultrasonic sensor;
 vehicle robot;
 Servo ultrasonicPanServo;
+
+// Actions are the user-intent layer: what the navigation logic wants the rover to do next.
 enum Action {
   ACTION_STOP = 0,
   ACTION_FORWARD,
@@ -19,6 +33,9 @@ enum Action {
   ACTION_LEFT,
   ACTION_RIGHT,
 };
+
+// Drive modes are the motor-control layer: how the chassis is currently being driven.
+// These are more specific than Action because a turn can be a pivot or a steering arc.
 enum DriveMode {
   DRIVE_STOPPED = 0,
   DRIVE_FORWARD,
@@ -28,11 +45,16 @@ enum DriveMode {
   DRIVE_PIVOT_LEFT,
   DRIVE_PIVOT_RIGHT,
 };
+
+// Snapshot of the latest left/right scan so escape logic can compare which side is more open.
 struct SideScanResult {
   float leftDistanceCm;
   float rightDistanceCm;
   Action bestAction;
 };
+
+// Aggregated sensor state used by both local recovery logic and Gemini prompts.
+// The "age" fields let the code reason about stale samples instead of trusting old data.
 struct NavigationSnapshot {
   float frontCm;
   float leftCm;
@@ -46,6 +68,8 @@ struct NavigationSnapshot {
   bool frontBlocked;
   int confidence;
 };
+
+// Small whitelist of actions that are currently considered safe enough to execute.
 struct SafeActionSet {
   bool forward;
   bool backward;
@@ -53,11 +77,16 @@ struct SafeActionSet {
   bool right;
   bool stop;
 };
+
+// Prompt variants let Gemini know whether this is a first obstacle, a failed maneuver,
+// or a near-trapped recovery case.
 enum GeminiPromptTemplate {
   GEMINI_PROMPT_STANDARD_OBSTACLE = 0,
   GEMINI_PROMPT_FAILED_MANEUVER,
   GEMINI_PROMPT_TRAPPED_RECOVERY,
 };
+
+// One directional ultrasonic sample, annotated with servo angle, capture time, and filtering confidence.
 struct DirectionalReading {
   float distanceCm;
   uint8_t angleDeg;
@@ -65,6 +94,8 @@ struct DirectionalReading {
   uint8_t sampleConfidence;
   bool valid;
 };
+
+// Historical record of a maneuver so the rover can penalize patterns that did not improve clearance.
 struct ManeuverOutcome {
   Action action;
   float frontBeforeCm;
@@ -75,10 +106,19 @@ struct ManeuverOutcome {
   bool improved;
   unsigned long completedMs;
 };
+
+// Parsed Gemini response. The rover accepts only a strict one-field JSON object.
 struct ParsedAction {
   bool valid;
   Action action;
 };
+
+// Main rover state machine.
+// - ROAMING: normal forward travel.
+// - HAZARD: obstacle is near; hold position until a decision can be made.
+// - DECIDING: choosing the next escape action locally or via Gemini.
+// - MANEUVERING: executing a bounded turn/reverse pulse.
+// - REVERSE_RESCAN: reverse finished; do a fresh scan before resuming.
 enum RoverState {
   STATE_ROAMING = 0,
   STATE_HAZARD,
@@ -86,6 +126,8 @@ enum RoverState {
   STATE_MANEUVERING,
   STATE_REVERSE_RESCAN,
 };
+
+// Async Gemini request lifecycle. The main loop never blocks on a network request.
 enum GeminiDecisionRequestState {
   GEMINI_REQUEST_IDLE = 0,
   GEMINI_REQUEST_PENDING,
@@ -93,6 +135,8 @@ enum GeminiDecisionRequestState {
   GEMINI_REQUEST_READY,
   GEMINI_REQUEST_FAILED,
 };
+
+// Parameters copied into the background Gemini worker task.
 struct GeminiDecisionRequestArgs {
   NavigationSnapshot snapshot;
   Action previousAction;
@@ -100,6 +144,8 @@ struct GeminiDecisionRequestArgs {
   GeminiPromptTemplate templateType;
   uint32_t generation;
 };
+
+// Result pushed back from the worker to the main loop through a single-slot queue.
 struct GeminiDecisionResultMessage {
   uint32_t generation;
   Action decision;
@@ -177,6 +223,8 @@ const int ACTION_SCORE_DOUBLE_REPEAT_PENALTY = 60;
 const int ACTION_SCORE_ABAB_PENALTY = 55;
 const int ACTION_SCORE_FAILED_OUTCOME_PENALTY = 45;
 const bool SERVO_SWEEP_DEBUG_ONLY = false;
+
+// Servo scan state machine for collecting left/front/right samples without blocking the main loop.
 enum ScanState {
   SCAN_IDLE,
   SCAN_MOVE_LEFT,
@@ -193,6 +241,8 @@ enum ScanState {
   SCAN_TURN_SAMPLE_FRONT,
   SCAN_COMPLETE,
 };
+
+// Ordered escape strategy. Each failure advances to a more conservative recovery stage.
 enum EscapeAttemptStage {
   ESCAPE_ATTEMPT_CLEARER_SIDE = 1,
   ESCAPE_ATTEMPT_CONTINUE_FARTHER,
@@ -200,6 +250,8 @@ enum EscapeAttemptStage {
   ESCAPE_ATTEMPT_SHORT_REVERSE,
   ESCAPE_ATTEMPT_TRAPPED,
 };
+
+// Runtime state: timing, hazard tracking, maneuver state, and rolling histories.
 unsigned long lastSensorMs = 0;
 unsigned long lastObstacleDecisionMs = 0;
 unsigned long lastValidMotorCommandMs = 0;
@@ -295,6 +347,8 @@ const uint8_t MANEUVER_OUTCOME_HISTORY_SIZE = 8;
 ManeuverOutcome maneuverOutcomeHistory[MANEUVER_OUTCOME_HISTORY_SIZE];
 uint8_t maneuverOutcomeCount = 0;
 uint8_t maneuverOutcomeHead = 0;
+
+// Forward declarations keep Arduino happy while letting related logic stay grouped below.
 float readUltrasonicCm();
 DirectionalReading readDirectionalUltrasonic(uint8_t measurementAngle);
 DirectionalReading medianOfThreeDirectionalReadings(
@@ -344,6 +398,8 @@ bool startGeminiDecisionRequest(const NavigationSnapshot &snapshot, Action previ
                                 const SideScanResult &scan, GeminiPromptTemplate templateType);
 bool updateGeminiDecisionRequest(unsigned long nowMs, Action &decisionOut);
 void geminiDecisionWorkerTask(void *parameter);
+
+// Clamp every PWM write into the valid 8-bit range expected by the motor driver.
 int clampPwm(int pwm) {
   if (pwm < 0) {
     return 0;
@@ -353,6 +409,8 @@ int clampPwm(int pwm) {
   }
   return pwm;
 }
+
+// Start a short non-blocking buzzer pulse; loop() turns it off when the deadline passes.
 void startBuzzer(uint16_t durationMs) {
   if (durationMs == 0) {
     return;
@@ -361,12 +419,16 @@ void startBuzzer(uint16_t durationMs) {
   buzzerActive = true;
   buzzerOffMs = millis() + durationMs;
 }
+
+// Service the buzzer timer so alerts do not stall the navigation loop.
 void updateBuzzer(unsigned long nowMs) {
   if (buzzerActive && (long)(nowMs - buzzerOffMs) >= 0) {
     digitalWrite(BUZZER_PIN, BUZZER_ACTIVE_HIGH ? LOW : HIGH);
     buzzerActive = false;
   }
 }
+
+// Reset the time-to-collision sequence whenever motion mode changes or sensor continuity is broken.
 void resetTtcSequence() {
   ttcSampleValid = false;
   lastTtcFrontCm = -1.0f;
@@ -662,6 +724,10 @@ struct GeminiGateResult {
   Action localRecommendation;
   const char *reason;
 };
+
+// Decide whether the network call is worth making.
+// Gemini is only consulted when local sensing is fresh, the rover is safely stopped near a hazard,
+// and the scene is ambiguous enough that a left/right choice is not obvious locally.
 GeminiGateResult evaluateGeminiGate(const NavigationSnapshot &snapshot, const SideScanResult &scan, Action previousAction,
                   GeminiPromptTemplate templateType) {
   GeminiGateResult gate = {};
@@ -1165,6 +1231,9 @@ int sensorConfidenceScore(unsigned long frontAgeMs, unsigned long leftAgeMs, uns
   return score;
 }
 NavigationSnapshot buildNavigationSnapshot(unsigned long nowMs) {
+  // Build a single coherent view over the latest front and side measurements.
+  // The snapshot normalizes raw buckets into "valid", "blocked", and confidence decisions
+  // so the rest of the rover logic can avoid duplicating stale-data checks everywhere.
   NavigationSnapshot snapshot = {};
   snapshot.frontCm = currentFrontDistanceCm;
   snapshot.leftCm = radarLeftCm;
@@ -1208,6 +1277,8 @@ float estimateForwardSpeedCmPerSecFromBaseSpeed(int speedBase) {
 }
 void startMotionCalibrationRecord(unsigned long stopCommandMs, float stopDistanceCm, int commandedBaseSpeed,
                                   int commandedRightPwm, int commandedLeftPwm, float closingSpeedCmPerSec) {
+  // Capture the exact conditions of a stop event so serial logs can be used to tune
+  // the stopping-distance model later without changing runtime behavior now.
   motionCalibrationActive = true;
   motionCalibrationStopCommandMs = stopCommandMs;
   motionCalibrationStopDistanceCm = stopDistanceCm;
@@ -1249,6 +1320,8 @@ void flushMotionCalibrationRecord(const char *reason) {
   motionCalibrationActive = false;
 }
 float estimateStoppingDistanceCm(int speedBase, bool closingRateCorroborated, float corroboratedClosingRateCmPerSec) {
+  // Simple stopping model:
+  // commanded travel during control/sensor delay + braking distance + fixed safety margin.
   float commandedSpeedCmPerSec = estimateForwardSpeedCmPerSecFromBaseSpeed(speedBase);
   float effectiveSpeedCmPerSec = commandedSpeedCmPerSec;
   if (closingRateCorroborated && corroboratedClosingRateCmPerSec >= TTC_BRAKE_MIN_CLOSING_CMPS) {
@@ -1261,6 +1334,8 @@ float estimateStoppingDistanceCm(int speedBase, bool closingRateCorroborated, fl
   return stoppingDistanceCm;
 }
 int computeAdaptiveForwardBaseSpeed(float frontDistanceCm, bool closingRateCorroborated, float corroboratedClosingRateCmPerSec) {
+  // Reduce cruise speed as clearance shrinks, but never pick a speed whose modeled stopping
+  // distance would exceed the currently available space in front of the rover.
   int target = BASE_SPEED;
   if (frontDistanceCm >= ULTRASONIC_MIN_VALID_CM) {
     if (frontDistanceCm <= 18.0f) {
@@ -1381,6 +1456,8 @@ float estimateFrontClearanceCm() {
   return currentFrontDistanceCm;
 }
 void startNoEchoRecovery(unsigned long nowMs) {
+  // A long no-echo streak is treated as a sensor-health problem, not as "clear path".
+  // The rover stops, holds position, and forces a rescan after a cooldown.
   panSweepRecoveryUntilMs = nowMs + ULTRASONIC_NO_ECHO_RECOVERY_HOLD_MS;
   sensorRetryActive = false;
   sensorRetryAttempt = 0;
@@ -1396,6 +1473,8 @@ void startNoEchoRecovery(unsigned long nowMs) {
   Serial.println("No echo recovery: stopping and scheduling a rescan hold");
 }
 void processDirectionalScanReading(const DirectionalReading &reading) {
+  // Every valid reading updates the short-lived directional radar cache.
+  // Only forward-facing reads participate in time-to-collision logic.
   updateRadarBuckets(reading);
   lastSensorMs = reading.capturedMs;
   if (reading.angleDeg != PAN_FORWARD_DEG) {
@@ -1405,6 +1484,9 @@ bool applyMotorAction(Action action, const NavigationSnapshot &snapshot);
   }
 }
 bool processFrontSafetyReading(unsigned long now, bool previousObstacle, const DirectionalReading &reading) {
+  // Front readings are the safety-critical path.
+  // This function merges raw distance, retry behavior, time-to-collision braking,
+  // hazard hysteresis, and immediate-stop rules into one decision point.
   processDirectionalScanReading(reading);
   if (reading.angleDeg != PAN_FORWARD_DEG) {
     return false;
@@ -1586,6 +1668,7 @@ bool processFrontSafetyReading(unsigned long now, bool previousObstacle, const D
   return false;
 }
 bool handleSensorRetryState(unsigned long now) {
+  // Retry a small number of no-echo reads before escalating to full sensor recovery.
   if (!sensorRetryActive) {
     return false;
   }
@@ -1666,6 +1749,9 @@ void resetDirectionalSampleCollector() {
   ultrasonicScanAttemptCount = 0;
 }
 bool updateStationaryUltrasonicSampling(unsigned long nowMs, bool previousObstacle) {
+  // Non-blocking scan controller.
+  // The servo visits left, front, and right; each direction is allowed multiple attempts,
+  // then collapsed into a filtered reading before the next scan state begins.
   if (!panServoReady) {
     return false;
   }
@@ -1828,6 +1914,8 @@ bool updateStationaryUltrasonicSampling(unsigned long nowMs, bool previousObstac
   return true;
 }
 void updateRadarBuckets(const DirectionalReading &reading) {
+  // Store the latest valid reading into front/left/right buckets based on servo angle.
+  // These buckets expire quickly, which prevents old side scans from driving new maneuvers.
   if (!reading.valid) {
     return;
   }
@@ -1875,6 +1963,8 @@ const char *scanBestActionString(const SideScanResult &scan) {
   return "NONE";
 }
 SideScanResult getRadarScanSnapshot() {
+  // Convert the live radar buckets into a decision-friendly left/right comparison.
+  // If neither side is trustworthy, the scan reports BACKWARD as the conservative escape bias.
   SideScanResult result;
   unsigned long nowMs = millis();
   bool leftFresh =
@@ -1906,6 +1996,8 @@ SideScanResult getRadarScanSnapshot() {
   return result;
 }
 void setMotorAction(Action action) {
+  // Low-level motor application path.
+  // This is where trims, minimum useful PWM, restart boost, and state bookkeeping are applied.
   requestedAction = action;
   if (action == currentMotorAction && action != ACTION_STOP) {
     if (action != ACTION_FORWARD || forwardRestartBoostActive || adaptiveForwardBaseSpeed == lastAppliedForwardBaseSpeed) {
@@ -2000,6 +2092,8 @@ void setMotorAction(Action action) {
   recordAction(action);
 }
 bool applyMotorAction(Action action, const NavigationSnapshot &snapshot) {
+  // Final safety wrapper before touching the motors.
+  // Even a chosen maneuver is revalidated against the freshest local scan.
   SideScanResult safetyScan = getRadarScanSnapshot();
   Action approvedAction = validateSafeAction(action, snapshot, safetyScan);
   if (approvedAction != action) {
@@ -2012,6 +2106,8 @@ bool applyMotorAction(Action action, const NavigationSnapshot &snapshot) {
   return approvedAction == action;
 }
 void updateForwardRestartBoost(unsigned long nowMs) {
+  // After a turn or reverse, briefly overdrive forward PWM to overcome drivetrain stiction,
+  // then fall back to the adaptive cruise PWM once movement is re-established.
   if (!forwardRestartBoostActive) {
     return;
   }
@@ -2074,6 +2170,8 @@ void applySteeringDrive(int direction, float rightScale, float leftScale) {
   robot.MoveBalanced(direction, rightSpeed, leftSpeed);
 }
 void setSteeringManeuver(Action action, bool reverseDrive) {
+  // Steering maneuvers are short pulses, not open-ended turns.
+  // They let the rover re-check forward clearance between pulses and stop early if needed.
   requestedAction = action;
   DriveMode proposedDriveMode = reverseDrive
       ? DRIVE_REVERSE
@@ -2132,6 +2230,8 @@ void startSteeringManeuver(Action maneuverAction, unsigned long durationMs, Acti
   setSteeringManeuver(maneuverAction, reverseDrive);
 }
 void beginDecisionManeuver(Action decision) {
+  // Translate a high-level decision into a bounded maneuver sequence.
+  // Left/right become pulsed steering turns; backward becomes a timed reverse; forward resumes roaming.
   NavigationSnapshot snapshot = buildNavigationSnapshot(millis());
   switch (decision) {
     case ACTION_LEFT:
@@ -2161,6 +2261,8 @@ void beginDecisionManeuver(Action decision) {
   }
 }
 void updateManeuverState(unsigned long now) {
+  // Advance or finish the active timed maneuver.
+  // Turn pulses are always followed by a forward rescan before the next pulse or a resume decision.
   if (roverState != STATE_MANEUVERING) {
     return;
   }
@@ -2281,6 +2383,7 @@ void updateManeuverState(unsigned long now) {
   hazardClearArmed = true;
 }
 float readUltrasonicCm() {
+  // Driver wrapper around the sensor library with serial diagnostics for both successful reads and no-echo cases.
   float distance = sensor.Ranging();
   unsigned long pulseWidthUs = sensor.LastPulseWidthUs();
   if (distance < 0.0f) {
@@ -2295,6 +2398,8 @@ float readUltrasonicCm() {
   return distance;
 }
 bool updateHazardFromDistance(float distanceCm) {
+  // Hazard hysteresis keeps the rover from chattering between clear/blocked on noisy edge readings.
+  // Entering a hazard needs repeated close samples; clearing it needs repeated safe samples.
   bool validDistance = (distanceCm >= ULTRASONIC_MIN_VALID_CM);
   if (!validDistance) {
     if (!obstacleNearby) {
@@ -2330,6 +2435,7 @@ bool updateHazardFromDistance(float distanceCm) {
   return false;
 }
 void connectWiFi() {
+  // Wi-Fi is optional for core driving; lack of connectivity only disables Gemini-assisted decisions.
   Serial.print("Connecting to WiFi");
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -2354,6 +2460,8 @@ Action chooseLocalFallback(float frontCm, const SideScanResult &scan, Action phy
 }
 Action queryGeminiForObstacleTurnBlocking(const NavigationSnapshot &snapshot, Action previousAction,
                                           const SideScanResult &scan, GeminiPromptTemplate templateType) {
+  // Build a tightly-scoped prompt from the freshest navigation snapshot.
+  // The model is treated as a constrained adviser: it must pick exactly one action from the local safe set.
   Action physicallyBlockedAction = ACTION_FORWARD;
   Action discouragedOscillationAction = oppositeAction(previousAction);
   if (WiFi.status() != WL_CONNECTED) {
@@ -2552,6 +2660,7 @@ Action queryGeminiForObstacleTurnBlocking(const NavigationSnapshot &snapshot, Ac
   return decision;
 }
 void geminiDecisionWorkerTask(void *parameter) {
+  // Background task wrapper so network latency never blocks loop().
   GeminiDecisionRequestArgs *request = static_cast<GeminiDecisionRequestArgs *>(parameter);
   Action decision = queryGeminiForObstacleTurnBlocking(request->snapshot, request->previousAction, request->scan,
                                                        request->templateType);
@@ -2567,6 +2676,8 @@ void geminiDecisionWorkerTask(void *parameter) {
 }
 bool startGeminiDecisionRequest(const NavigationSnapshot &snapshot, Action previousAction, const SideScanResult &scan,
                                 GeminiPromptTemplate templateType) {
+  // Fire exactly one asynchronous Gemini request at a time and remember the local fallback
+  // that should be used if the request later fails or times out.
   if (geminiDecisionResultQueue == nullptr) {
     return false;
   }
@@ -2610,6 +2721,8 @@ bool startGeminiDecisionRequest(const NavigationSnapshot &snapshot, Action previ
   return true;
 }
 bool updateGeminiDecisionRequest(unsigned long nowMs, Action &decisionOut) {
+  // Poll the async request state without blocking.
+  // If the reply is late, the main loop marks the request timed out and stays on local logic.
   GeminiDecisionResultMessage result;
   while (geminiDecisionRequestState == GEMINI_REQUEST_PENDING && geminiDecisionResultQueue != nullptr &&
          xQueueReceive(geminiDecisionResultQueue, &result, 0) == pdPASS) {
@@ -2646,6 +2759,9 @@ bool updateGeminiDecisionRequest(unsigned long nowMs, Action &decisionOut) {
   return false;
 }
 void setup() {
+  // One-time initialization sequence:
+  // serial logging, Gemini result queue, buzzer, motors, ultrasonic sensor, pan servo,
+  // Wi-Fi, and an initial front reading that seeds the first hazard-aware scan cycle.
   Serial.begin(115200);
   randomSeed((unsigned long)esp_random());
   printHeapDiagnostics("startup");
@@ -2725,6 +2841,14 @@ void setup() {
   lastControlHeartbeatMs = millis();
 }
 void loop() {
+  // Main cooperative control loop.
+  // Priority order is deliberate:
+  // 1) watchdog safety
+  // 2) servo/sensor recovery
+  // 3) active maneuver timing
+  // 4) fresh sensor scanning
+  // 5) obstacle decision making
+  // 6) normal forward roaming
   unsigned long now = millis();
   if (currentMotorAction != ACTION_STOP &&
       (now - lastControlHeartbeatMs) > MOTOR_CONTROL_HEARTBEAT_TIMEOUT_MS) {
