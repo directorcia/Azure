@@ -74,6 +74,7 @@ and the response is slow, the model is likely running primarily on CPU.
 
 Docker
 ------
+wsl --install
 Winget install microsoft.wsl
 
 Winget install docker.dockerdesktop
@@ -129,7 +130,7 @@ OpenWeb-UI
 ----------
 Foundry server status
 http://localhost:5272
-Foundry model run phi-4-mini
+Foundry run phi-4-mini
 Invoke-WebRequest http://localhost:<PORT>/v1/models
 docker start open-webui
 docker ps
@@ -197,10 +198,8 @@ curl http://localhost:54047/v1/models
 		"tool_use": true
 		"capabilities": [...]
 
-foundry model run qwen3-8b
+foundry run qwen3-8b
 - Add Web search in Models
-
-
 
 docker run -d --name searxng -p 8081:8080 searxng/searxng
 
@@ -230,7 +229,7 @@ winget install Ollama.Ollama
 
 ollama --version
 
-ollama pull qwen3.8
+ollama run qwen3.5:9b
 
 Confirm it's running at http://localhost:11434
 
@@ -245,7 +244,7 @@ Inside Open WebUI:
 	Connections
 	Manage Direct Connections
 	+
-	http://localhost:11434/v1
+	http://host.docker.internal:11434
 	Authentication - None
 Refresh Open WebUI
 
