@@ -84,6 +84,10 @@ After it completes:
 	3. Accept the licence agreement.
 	4. Allow Docker to configure WSL 2 if prompted.
 
+wsl --Upgrade
+
+Reboot
+
 docker pull ghcr.io/open-webui/open-webui:main
 
 docker ps # check running
@@ -116,6 +120,8 @@ docker run -d `
   --name open-webui `
   --restart always `
   ghcr.io/open-webui/open-webui:main
+
+docker run -d -p 3000:8080 --add-host=host.docker.internal:host-gateway -v open-webui:/app/backend/data -e WEBUI_SECRET_KEY=PASTE_YOUR_SECRET_HERE --name open-webui --restart always ghcr.io/open-webui/open-webui:main
 
 http://localhost:3000
 
