@@ -130,9 +130,7 @@ OpenWeb-UI
 Foundry server status
 http://localhost:5272
 Foundry model run phi-4-mini
-Invoke-WebRequest http://localhost:<PORT>/openai/status
-	/v1/chat/completions
-	/openai/status
+Invoke-WebRequest http://localhost:<PORT>/v1/models
 docker start open-webui
 http://localhost:3000
 Inside Open WebUI:
@@ -146,22 +144,12 @@ Inside Open WebUI:
 	Connections
 	Manage Direct Connections
 	+
-	http://localhost:<PORT>/v1
+	http://host.docker.internal:<PORT>/v1
 	Authentication - None
 	Refresh Open WebUI
 
-Sign in as admin.
-Click Admin Panel
-Select Settings
-Select Connections (or External Connections depending on version)
-Add an OpenAI-compatible endpoint.
-Use:
-API Base URL:
-http://host.docker.internal:53878/v1
-
 Ensure foundry model loaded
 Use model in openwebui by selecting
-
 
 Web search
 Admin
