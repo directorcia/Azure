@@ -126,12 +126,15 @@ docker run -d -p 3000:8080 --add-host=host.docker.internal:host-gateway -v open-
 http://localhost:3000
 
 OpenWeb-UI
-
+----------
 Foundry server status
 http://localhost:5272
 Foundry model run phi-4-mini
 Invoke-WebRequest http://localhost:<PORT>/v1/models
 docker start open-webui
+docker ps
+docker version
+
 http://localhost:3000
 Inside Open WebUI:
 	Profile
@@ -147,6 +150,8 @@ Inside Open WebUI:
 	http://host.docker.internal:<PORT>/v1
 	Authentication - None
 	Refresh Open WebUI
+
+Remote access via network http://<PC IP>:3000
 
 Ensure foundry model loaded
 Use model in openwebui by selecting
@@ -183,6 +188,19 @@ Built-in Tools:
 ❌ Memory
 
 Prompt -  List all available tools.
+
+curl http://localhost:54047/v1/models
+- Look for 'tools'
+- Missing?
+		"tools": [...]
+		"function_calling": true
+		"tool_use": true
+		"capabilities": [...]
+
+foundry model run qwen3-8b
+- Add Web search in Models
+
+
 
 docker run -d --name searxng -p 8081:8080 searxng/searxng
 
