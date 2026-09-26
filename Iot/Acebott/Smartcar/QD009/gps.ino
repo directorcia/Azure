@@ -63,14 +63,13 @@
 #define OLED_RESET     -1
 #define LCD_REFRESH_MS 400
 // ===================== GPS NORTH TEST TUNING =====================
-#define GPS_NORTH_DRIVE_MS        7000    // longer burst so COG/displacement can form
-#define GPS_NORTH_TURN_MS         700     // fallback; actual spin is scaled by heading error
-#define GPS_NORTH_TURN_MS_PER_DEG 14      // ~2.5 s for a 180° correction
-#define GPS_NORTH_TURN_MIN_MS     600
-#define GPS_NORTH_TURN_MAX_MS     3200
-#define GPS_NORTH_SETTLE_MS       400     // only a short pause; heading is sampled while moving
+#define GPS_NORTH_DRIVE_MS        5500    // drive longer for clearer lat change
+#define GPS_NORTH_TURN_DEG_PER_SEC 90.0   // measured in-place yaw rate at GPS_NORTH_TURN_SPEED
+#define GPS_NORTH_TURN_MIN_MS     180     // below this the wheels barely break static friction
+#define GPS_NORTH_TURN_MAX_MS     1400    // cap so one bad heading can't spin us right around
+#define GPS_NORTH_SETTLE_MS       2800    // give GPS time to update after stop
 #define GPS_NORTH_FIX_HOLD_MS     2500    // require a continuous fix before the first move
-#define GPS_NORTH_MIN_RELIABLE_MOVE_M 1.5  // with live COG we can trust a shorter GPS hop
+#define GPS_NORTH_MIN_RELIABLE_MOVE_M 3.0  // ignore displacement course below GPS noise floor (~2-3 m)
 #define GPS_NORTH_SPEED           155
 #define GPS_NORTH_TURN_SPEED      255     // 4WD skid-steer spins stall well below full PWM
 #define MOTOR_PWM_FREQ_HZ         500     // Acebott vehicle library default
@@ -79,7 +78,9 @@
 #define GPS_COURSE_TOLERANCE_DEG  28.0    // how close to 0°/360° is "north"
 #define GPS_MAX_CONSECUTIVE_TURNS 8       // safety limit
 #define GPS_FIX_MAX_AGE_MS        5000    // 1 Hz modules plus a missed sentence used to trip 2500 ms
+#define GPS_COURSE_MIN_KMPH       1.5     // below this a receiver's course output is noise
 #define MOTOR_TRIM_DEFAULT        85      // calibrated: 4 s @ 200, straight (was 363 mm left at 0)
+#define MOTOR_TRIM_REFERENCE_SPEED 200    // speed used when MOTOR_TRIM_DEFAULT was calibrated
 #define MOTOR_TRIM_MIN            -120
 #define MOTOR_TRIM_MAX            120
 #define STRAIGHT_TEST_MS          4000    // timed straight run for measuring pull
@@ -111,15 +112,13 @@ uint8_t gpsNorthState = 0;
 double gpsNorthStartLat = 0.0;
 double gpsNorthStartLng = 0.0;
 double lastTravelHeading = -1.0;
-bool haveTravelHeading = false;
-double lastMovedM = 0.0;
-double lastHeadingErr = 0.0;
+double drivingCourseDeg = -1.0;      // course sampled while actually rolling
+unsigned long drivingCourseMs = 0;
 int lastNorthTurnDir = 0;  // -1 left, +1 right, 0 none
 unsigned long gpsNorthStepMs = 0;
-unsigned long gpsNorthTurnMs = GPS_NORTH_TURN_MS;
+unsigned long gpsNorthTurnMs = 0;    // proportional duration of the current turn
 unsigned long gpsNorthFixHeldMs = 0;
 unsigned long lastNorthWaitLogMs = 0;
-bool gpsNorthHadMotion = false;
 uint8_t consecutiveTurns = 0;
 int motorTrim = MOTOR_TRIM_DEFAULT;  // +boosts left / -boosts right
 uint8_t lastMotorDir = 0;
@@ -259,28 +258,6 @@ double wrap180(double deg) {
 double headingErrorToNorth(double headingDeg) {
   return wrap180(headingDeg);
 }
-unsigned long turnDurationForError(double errDeg) {
-  double mag = fabs(errDeg);
-  unsigned long ms = (unsigned long)(mag * GPS_NORTH_TURN_MS_PER_DEG);
-  if (ms < GPS_NORTH_TURN_MIN_MS) ms = GPS_NORTH_TURN_MIN_MS;
-  if (ms > GPS_NORTH_TURN_MAX_MS) ms = GPS_NORTH_TURN_MAX_MS;
-  return ms;
-}
-// Course-over-ground is only trustworthy while the receiver is actually
-// moving. After we stop, TinyGPS keeps the last course as "valid" forever.
-bool sampleMotionHeading(double *headingOut) {
-  if (!gps.course.isValid() || gps.course.age() >= 2000) return false;
-  if (!gps.speed.isValid() || gps.speed.age() >= 2000) return false;
-  if (gps.speed.kmph() < 0.5) return false;
-  if (headingOut) *headingOut = gps.course.deg();
-  return true;
-}
-void updateTravelHeadingWhileMoving() {
-  double heading = 0.0;
-  if (!sampleMotionHeading(&heading)) return;
-  lastTravelHeading = heading;
-  haveTravelHeading = true;
-}
 void gpsInit() {
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   lastGpsStatusMs = millis();
@@ -376,20 +353,20 @@ void handleTelemetry() {
   if (WiFi.status() != WL_CONNECTED || !mqttConnect()) return;
   const char *mode = gpsNorthTestMode ? "NORTH" : (continuousTestMode ? "LOOP" : "IDLE");
   char turnCh = (lastNorthTurnDir < 0) ? 'L' : ((lastNorthTurnDir > 0) ? 'R' : '-');
-  char logLine[192];
+  char logLine[160];
   if (gps.location.isValid()) {
     snprintf(logLine, sizeof(logLine),
-             "t=%lu mode=%s st=%s lat=%.6f lng=%.6f hd=%.1f err=%.0f mv=%.1f sats=%lu nmea=%lu ok=%lu bad=%lu turns=%d dir=%c",
+             "t=%lu mode=%s st=%s lat=%.6f lng=%.6f hd=%.1f sats=%lu nmea=%lu ok=%lu bad=%lu turns=%d dir=%c",
              millis() / 1000, mode, northStateStr(), gps.location.lat(), gps.location.lng(),
-             lastTravelHeading, lastHeadingErr, lastMovedM, (unsigned long)gpsSatCount(), gpsSentenceCount,
+             lastTravelHeading, (unsigned long)gpsSatCount(), gpsSentenceCount,
              (unsigned long)gps.passedChecksum(), (unsigned long)gps.failedChecksum(),
              consecutiveTurns, turnCh);
   } else {
     snprintf(logLine, sizeof(logLine),
-             "t=%lu mode=%s st=%s lat=- lng=- hd=%.1f err=%.0f mv=%.1f sats=%lu nmea=%lu ok=%lu bad=%lu turns=%d dir=%c",
-             millis() / 1000, mode, northStateStr(), lastTravelHeading, lastHeadingErr, lastMovedM,
-             (unsigned long)gpsSatCount(), gpsSentenceCount, (unsigned long)gps.passedChecksum(),
-             (unsigned long)gps.failedChecksum(), consecutiveTurns, turnCh);
+             "t=%lu mode=%s st=%s lat=- lng=- hd=%.1f sats=%lu nmea=%lu ok=%lu bad=%lu turns=%d dir=%c",
+             millis() / 1000, mode, northStateStr(), lastTravelHeading, (unsigned long)gpsSatCount(),
+             gpsSentenceCount, (unsigned long)gps.passedChecksum(), (unsigned long)gps.failedChecksum(),
+             consecutiveTurns, turnCh);
   }
   feedLog.publish(logLine);
   Serial.printf("[Telemetry] %s\n", logLine);
@@ -541,6 +518,9 @@ void handleLcd() {
   display.display();
 }
 // ===================== MOTOR CONTROL =====================
+int motorTrimAtSpeed(uint8_t speed) {
+  return motorTrim * (int)speed / MOTOR_TRIM_REFERENCE_SPEED;
+}
 void writePwmDuty(uint8_t pin, uint8_t val) {
   analogWrite(pin, val);
 }
@@ -556,8 +536,8 @@ void printMotorTrim() {
   Serial.printf("Motor trim %d  (+ more LEFT PWM, - more RIGHT PWM)\n", motorTrim);
   Serial.printf("  Example @ speed %d → left %d, right %d\n",
                 currentSpeed,
-                clampPwm((int)currentSpeed + motorTrim),
-                clampPwm((int)currentSpeed - motorTrim));
+                clampPwm((int)currentSpeed + motorTrimAtSpeed(currentSpeed)),
+                clampPwm((int)currentSpeed - motorTrimAtSpeed(currentSpeed)));
 }
 void setMotorTrim(int value) {
   if (value < MOTOR_TRIM_MIN) value = MOTOR_TRIM_MIN;
@@ -594,11 +574,17 @@ void setMotors(uint8_t directionByte, uint8_t leftSpeed, uint8_t rightSpeed) {
   lastMotorRight = rightSpeed;
   uint8_t leftOut = leftSpeed;
   uint8_t rightOut = rightSpeed;
-  if (leftSpeed > 0) {
-    leftOut = clampPwm((int)leftSpeed + motorTrim);
-  }
-  if (rightSpeed > 0) {
-    rightOut = clampPwm((int)rightSpeed - motorTrim);
+  // Trim is a straight-line calibration. Applying it to an in-place spin makes
+  // the two sides unequal, so the car arcs instead of yawing and left/right
+  // turns sweep different angles for the same duration.
+  bool isSpin = (directionByte == DIR_SPIN_LEFT || directionByte == DIR_SPIN_RIGHT);
+  if (!isSpin) {
+    if (leftSpeed > 0) {
+      leftOut = clampPwm((int)leftSpeed + motorTrimAtSpeed(leftSpeed));
+    }
+    if (rightSpeed > 0) {
+      rightOut = clampPwm((int)rightSpeed - motorTrimAtSpeed(rightSpeed));
+    }
   }
   digitalWrite(EN_PIN, LOW);
   writePwmDuty(PWM1_PIN, rightOut);
@@ -633,8 +619,6 @@ void stopGpsNorthTest(const char *message) {
   gpsNorthState = NORTH_WAIT_FOR_FIX;
   consecutiveTurns = 0;
   gpsNorthFixHeldMs = 0;
-  gpsNorthHadMotion = false;
-  haveTravelHeading = false;
   moveStop();
 }
 void handleGpsNorthTest() {
@@ -657,43 +641,30 @@ void handleGpsNorthTest() {
       }
       if (gpsNorthFixHeldMs == 0) {
         gpsNorthFixHeldMs = now;
-        unsigned long holdMs = gpsNorthHadMotion ? 400 : GPS_NORTH_FIX_HOLD_MS;
         Serial.printf("[North] Fix seen (lat %.6f, sats %lu). Holding %.1f s...\n",
-                      gps.location.lat(), gpsSatCount(), holdMs / 1000.0);
+                      gps.location.lat(), gpsSatCount(), GPS_NORTH_FIX_HOLD_MS / 1000.0);
         return;
       }
-      {
-        unsigned long holdMs = gpsNorthHadMotion ? 400 : GPS_NORTH_FIX_HOLD_MS;
-        if (now - gpsNorthFixHeldMs < holdMs) return;
-      }
+      if (now - gpsNorthFixHeldMs < GPS_NORTH_FIX_HOLD_MS) return;
       gpsNorthStartLat = gps.location.lat();
       gpsNorthStartLng = gps.location.lng();
       gpsNorthStepMs = now;
       gpsNorthFixHeldMs = 0;
-      haveTravelHeading = false;
-      lastTravelHeading = -1.0;
+      drivingCourseDeg = -1.0;
       gpsNorthState = NORTH_DRIVE_FORWARD;
       Serial.printf("[North] Baseline lat %.6f lng %.6f. Driving forward for %.1f s\n",
                     gpsNorthStartLat, gpsNorthStartLng, GPS_NORTH_DRIVE_MS / 1000.0);
       moveForward(GPS_NORTH_SPEED);
       break;
     case NORTH_DRIVE_FORWARD:
-      // Keep driving even if GPS age blips; cheap 1 Hz modules often exceed 2.5 s.
-      // Sample course-over-ground *while moving* — after a stop, speed drops
-      // and TinyGPS keeps a stale course flagged as valid.
-      updateTravelHeadingWhileMoving();
-      gpsNorthHadMotion = true;
-      if (haveTravelHeading && (now - gpsNorthStepMs >= 2500)) {
-        lastHeadingErr = headingErrorToNorth(lastTravelHeading);
-        if (fabs(lastHeadingErr) > GPS_COURSE_TOLERANCE_DEG) {
-          moveStop();
-          gpsNorthStepMs = now;
-          gpsNorthState = NORTH_COMPARE;
-          Serial.printf("[North] Early check: live course %.0f err %.0f\n",
-                        lastTravelHeading, lastHeadingErr);
-          break;
-        }
+      // A course fix is only meaningful while the wheels are actually turning;
+      // after the stop+settle the receiver reports leftover noise.
+      if (gps.course.isValid() && gps.course.age() < GPS_FIX_MAX_AGE_MS &&
+          gps.speed.isValid() && gps.speed.kmph() >= GPS_COURSE_MIN_KMPH) {
+        drivingCourseDeg = gps.course.deg();
+        drivingCourseMs = now;
       }
+      // Keep driving even if GPS age blips; cheap 1 Hz modules often exceed 2.5 s.
       if (now - gpsNorthStepMs >= GPS_NORTH_DRIVE_MS) {
         moveStop();
         gpsNorthStepMs = now;
@@ -715,42 +686,40 @@ void handleGpsNorthTest() {
       double currentLng = gps.location.lng();
       double movedM = TinyGPSPlus::distanceBetween(
           gpsNorthStartLat, gpsNorthStartLng, currentLat, currentLng);
-      lastMovedM = movedM;
-      double heading = 0.0;
-      const char *src = "-";
+      double displacementCourse = TinyGPSPlus::courseTo(
+          gpsNorthStartLat, gpsNorthStartLng, currentLat, currentLng);
+      bool hasCourse = (drivingCourseDeg >= 0.0) &&
+                       (now - drivingCourseMs) < (GPS_NORTH_SETTLE_MS + GPS_NORTH_DRIVE_MS);
+      double instantCourse = hasCourse ? drivingCourseDeg : -1.0;
+      // GPS position noise is commonly 2-3 m; a displacement course computed
+      // from a shorter move is essentially random. Prefer it once we've moved
+      // far enough, otherwise fall back to the receiver's own Doppler-derived
+      // course (independent of position noise) if it has one.
       bool haveReliableHeading = false;
-      // Prefer Doppler course captured while the wheels were rolling. Start/stop
-      // displacement on a cheap GPS is often only 1-3 m of noise, which used to
-      // look like "no heading" and made the car keep driving the same way.
-      if (haveTravelHeading) {
-        heading = lastTravelHeading;
+      double heading = 0.0;
+      if (movedM >= GPS_NORTH_MIN_RELIABLE_MOVE_M) {
+        heading = displacementCourse;
         haveReliableHeading = true;
-        src = "cog";
-      } else if (movedM >= GPS_NORTH_MIN_RELIABLE_MOVE_M) {
-        heading = TinyGPSPlus::courseTo(
-            gpsNorthStartLat, gpsNorthStartLng, currentLat, currentLng);
+      } else if (hasCourse) {
+        heading = instantCourse;
+        haveReliableHeading = true;
+      }
+      if (haveReliableHeading) {
         lastTravelHeading = heading;
-        haveTravelHeading = true;
-        haveReliableHeading = true;
-        src = "disp";
-      } else if (sampleMotionHeading(&heading)) {
-        lastTravelHeading = heading;
-        haveTravelHeading = true;
-        haveReliableHeading = true;
-        src = "live";
       }
       if (!haveReliableHeading) {
-        Serial.printf("[North] no heading yet (move %.1fm). Driving on to sample course\n", movedM);
+        // Don't guess a turn from noise - keep driving so the next check has
+        // a longer, more trustworthy displacement to measure against.
+        Serial.printf("[North] move %.1fm too small for a reliable heading, driving on\n", movedM);
         gpsNorthStepMs = now;
         gpsNorthState = NORTH_DRIVE_FORWARD;
         moveForward(GPS_NORTH_SPEED);
         break;
       }
       double err = headingErrorToNorth(heading);
-      lastHeadingErr = err;
       bool goingNorth = fabs(err) <= GPS_COURSE_TOLERANCE_DEG;
-      Serial.printf("[North] src %s move %.1fm hd %.0f err %.0f sats %lu\n",
-                    src, movedM, heading, err, gpsSatCount());
+      Serial.printf("[North] move %.1fm hd %.0f inst %.0f err %.0f sats %lu\n",
+                    movedM, heading, instantCourse, err, gpsSatCount());
       if (goingNorth) {
         gpsNorthStartLat = currentLat;
         gpsNorthStartLng = currentLng;
@@ -766,12 +735,19 @@ void handleGpsNorthTest() {
           return;
         }
         consecutiveTurns++;
-        gpsNorthTurnMs = turnDurationForError(err);
         gpsNorthStepMs = now;
         gpsNorthState = NORTH_TURN;
+        // Open-loop turns must be scaled to the error. A fixed duration
+        // overshoots small corrections and undershoots large ones, which is
+        // what made the heading oscillate around north instead of settling.
+        double turnMs = (fabs(err) / GPS_NORTH_TURN_DEG_PER_SEC) * 1000.0;
+        if (turnMs < GPS_NORTH_TURN_MIN_MS) turnMs = GPS_NORTH_TURN_MIN_MS;
+        if (turnMs > GPS_NORTH_TURN_MAX_MS) turnMs = GPS_NORTH_TURN_MAX_MS;
+        gpsNorthTurnMs = (unsigned long)turnMs;
         // err > 0 means course is east of north (clockwise) - turn LEFT
         // (counter-clockwise) to reduce it back to 0; err < 0 (west of
-        // north) needs a RIGHT turn.
+        // north) needs a RIGHT turn. This was previously inverted, which
+        // made every "correction" push heading further off, spiraling.
         if (err > 0.0) {
           lastNorthTurnDir = -1;
           Serial.printf("[North] Heading %.0f, need left %.0f deg for %lu ms (turn %d/%d)\n",
@@ -790,8 +766,7 @@ void handleGpsNorthTest() {
       if (now - gpsNorthStepMs >= gpsNorthTurnMs) {
         moveStop();
         gpsNorthFixHeldMs = 0;
-        haveTravelHeading = false;
-        lastTravelHeading = -1.0;
+        drivingCourseDeg = -1.0;              // stale: it predates the turn
         gpsNorthState = NORTH_WAIT_FOR_FIX;   // force new baseline after turn
         Serial.println("[North] Turn finished. Taking new baseline.");
       }
