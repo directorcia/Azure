@@ -1,0 +1,208 @@
+Local install
+-------------
+
+1. Install Python
+
+Open an elevated PowerShell:
+
+winget install Python.Python.3.12
+
+Verify:
+
+python --version
+pip --version
+
+
+Expected:
+
+Python 3.12.x
+
+2. Create the Open WebUI Folder
+mkdir C:\OpenWebUI
+cd C:\OpenWebUI
+
+3. Create a Virtual Environment
+python -m venv venv
+
+
+Activate it:
+
+.\venv\Scripts\activate
+
+
+You should see:
+
+(venv) PS C:\OpenWebUI>
+
+4. Upgrade Pip
+python -m pip install --upgrade pip
+
+5. Install Open WebUI
+pip install open-webui
+
+6. Start Open WebUI
+open-webui serve
+
+
+If that command doesn't exist:
+
+python -m open_webui serve
+
+7. Verify It Is Listening
+
+Open a second PowerShell window:
+
+netstat -ano | findstr 8080
+
+
+or
+
+Invoke-WebRequest http://localhost:8080
+
+
+Expected:
+
+StatusCode : 200
+
+
+or
+
+StatusCode : 302
+
+8. Open the Browser
+
+Browse to:
+
+http://localhost:8080
+
+
+You should see the Open WebUI login screen.
+
+Create your administrator account.
+
+9. Install Foundry Local
+winget install Microsoft.FoundryLocal
+
+
+Verify:
+
+foundry --version
+
+10. Start a Model
+
+List models:
+
+foundry model list
+
+
+Run a model:
+
+foundry model run phi-4-mini
+
+
+Check server status:
+
+foundry server status
+
+
+You mentioned your Foundry instance is using:
+
+58639
+
+
+Verify:
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:58639/v1/models"
+
+11. Configure Open WebUI
+
+In Open WebUI:
+
+Admin Settings
+
+
+Then:
+
+Connections
+
+
+Add an OpenAI-compatible connection:
+
+Base URL:
+http://127.0.0.1:58639/v1
+
+API Key:
+dummy
+
+
+Leave the API key as:
+
+dummy
+
+
+unless you've specifically configured authentication.
+
+12. Test Foundry
+
+Use your PowerShell test:
+
+$body = @{
+    model = "Phi-4-mini-instruct-cuda-gpu"
+    messages = @(
+        @{
+            role = "user"
+            content = "Hello"
+        }
+    )
+} | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:58639/v1/chat/completions" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+
+
+If that works, Open WebUI will work.
+
+If Open WebUI Doesn't Load
+
+Find the actual listening port:
+
+netstat -ano | findstr LISTENING
+
+
+or
+
+Get-NetTCPConnection -State Listen |
+Sort-Object LocalPort
+
+
+Look for a Python process.
+
+Recommended Startup Script
+
+Create:
+
+C:\OpenWebUI\start-openwebui.ps1
+
+
+Contents:
+
+cd C:\OpenWebUI
+.\venv\Scripts\activate
+open-webui serve
+
+
+Run with:
+
+powershell -ExecutionPolicy Bypass -File C:\OpenWebUI\start-openwebui.ps1
+
+
+Given the screenshot you posted earlier, I suspect you're already at step 6 and Open WebUI is actually running. The next thing I'd test is simply:
+
+Invoke-WebRequest http://localhost:8080
+
+
+and see whether you get a 200 or 302 response. That will confirm the web server is up.
