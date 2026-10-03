@@ -27,6 +27,7 @@
  *  - LEFT_LED_PIN  (4)  : External left LED
  *  - RIGHT_LED_PIN (33) : External right LED
  *  - GPS_RX_PIN (27) : QD009 GPS TX -> ESP32 RX
+ *  - GPS_TX_PIN (25) : ESP32 TX -> QD009 GPS RX (servo port 25 I/O; sends receiver config)
  *  - SSD1306 OLED I2C (SDA=21, SCL=22). VCC = 3.3V only, not 5V.
  *
  * Shift Register Bit Mapping:
@@ -53,8 +54,9 @@
 #define LEFT_LED_PIN   4
 #define RIGHT_LED_PIN  33
 #define GPS_RX_PIN     27
-#define GPS_TX_PIN     -1
+#define GPS_TX_PIN     25   // QD009 RX wire is on servo port 25's I/O pin; -1 = receive only
 #define GPS_BAUD       9600
+#define GPS_NAV_MODE   2    // $PCAS11: 1=stationary and 3=vehicle are documented; 2 should be walking
 #define OLED_SDA_PIN   21   // Acebott car-shield I2C header SDA (ESP32 GPIO 21)
 #define OLED_SCL_PIN   22   // Acebott car-shield I2C header SCL (ESP32 GPIO 22)
 #define OLED_ADDR      0x3C // Core Electronics white SSD1306 default
@@ -64,13 +66,13 @@
 #define LCD_REFRESH_MS 400
 // ===================== GPS NORTH TEST TUNING =====================
 #define GPS_NORTH_DRIVE_MS        5500    // drive longer for clearer lat change
-#define GPS_NORTH_TURN_DEG_PER_SEC 90.0   // measured in-place yaw rate at GPS_NORTH_TURN_SPEED
+#define GPS_NORTH_TURN_DEG_PER_SEC 90.0   // estimate, not yet measured; sim tolerates ~45-135 real
 #define GPS_NORTH_TURN_MIN_MS     180     // below this the wheels barely break static friction
 #define GPS_NORTH_TURN_MAX_MS     1400    // cap so one bad heading can't spin us right around
 #define GPS_NORTH_SETTLE_MS       2800    // give GPS time to update after stop
 #define GPS_NORTH_FIX_HOLD_MS     2500    // require a continuous fix before the first move
 #define GPS_NORTH_MIN_RELIABLE_MOVE_M 3.0  // ignore displacement course below GPS noise floor (~2-3 m)
-#define GPS_NORTH_SPEED           155
+#define GPS_NORTH_SPEED           MOTOR_TRIM_REFERENCE_SPEED  // only speed the trim is proven straight at; 155 looped right
 #define GPS_NORTH_TURN_SPEED      255     // 4WD skid-steer spins stall well below full PWM
 #define MOTOR_PWM_FREQ_HZ         500     // Acebott vehicle library default
 #define TURN_MIN_SPEED            240     // in-place yaw needs much more torque than forward
@@ -79,7 +81,11 @@
 #define GPS_MAX_CONSECUTIVE_TURNS 8       // safety limit
 #define GPS_FIX_MAX_AGE_MS        5000    // 1 Hz modules plus a missed sentence used to trip 2500 ms
 #define GPS_COURSE_MIN_KMPH       1.5     // below this a receiver's course output is noise
-#define MOTOR_TRIM_DEFAULT        85      // calibrated: 4 s @ 200, straight (was 363 mm left at 0)
+#define GPS_STUCK_LEG_M           0.8     // a leg covers ~1.7 m at PWM 200 (1.28 m in 4 s cal); parked GPS wanders 0.1-0.4 m
+#define GPS_STUCK_MAX_LEGS        12      // ~100 s; on 09-27 GPS showed ~no movement for ~95 s while the car drove
+#define GPS_NAV_MIN_SATS          6       // a fresh-but-weak fix (e.g. 5 sats at first lock) still wanders metres
+#define GPS_NAV_MAX_HDOP          2.5
+#define MOTOR_TRIM_DEFAULT        85      // indoor floor: 4 s @ 200 straight (363 mm left at 0); outdoors 09-27 it circled ~3 m radius
 #define MOTOR_TRIM_REFERENCE_SPEED 200    // speed used when MOTOR_TRIM_DEFAULT was calibrated
 #define MOTOR_TRIM_MIN            -120
 #define MOTOR_TRIM_MAX            120
@@ -93,6 +99,11 @@ const uint8_t DIR_SPIN_LEFT  = 83;    // Left reverse + Right forward
 const uint8_t DIR_SPIN_RIGHT = 172;   // Left forward + Right reverse
 const uint8_t DIR_LEFT_ONLY  = 160;
 const uint8_t DIR_RIGHT_ONLY = 3;
+// Per-side bits of the direction byte (bit mapping in the header comment)
+const uint8_t LEFT_FWD_BITS   = 0xA0;  // M1 + M2
+const uint8_t LEFT_BACK_BITS  = 0x50;
+const uint8_t RIGHT_FWD_BITS  = 0x03;  // M3 + M4
+const uint8_t RIGHT_BACK_BITS = 0x0C;
 // ===================== GLOBAL STATE =====================
 uint8_t currentSpeed = 255;
 bool continuousTestMode = false;
@@ -106,6 +117,10 @@ bool gpsDataSeen = false;
 unsigned long gpsCharacterCount = 0;
 unsigned long gpsSentenceCount = 0;
 unsigned long lastGpsStatusMs = 0;
+char gpsLineBuf[84];
+uint8_t gpsLineLen = 0;
+char gpsInfoLine[84] = "";            // receiver's own $..TXT identification, e.g. HW=ATGM336H
+bool gpsInfoPublished = false;
 TinyGPSPlus gps;
 bool gpsNorthTestMode = false;
 uint8_t gpsNorthState = 0;
@@ -114,16 +129,30 @@ double gpsNorthStartLng = 0.0;
 double lastTravelHeading = -1.0;
 double drivingCourseDeg = -1.0;      // course sampled while actually rolling
 unsigned long drivingCourseMs = 0;
+double lastSeenCourseDeg = -1.0;
+double legStartLat = 0.0;
+double legStartLng = 0.0;
+uint8_t stuckLegs = 0;
 int lastNorthTurnDir = 0;  // -1 left, +1 right, 0 none
 unsigned long gpsNorthStepMs = 0;
 unsigned long gpsNorthTurnMs = 0;    // proportional duration of the current turn
 unsigned long gpsNorthFixHeldMs = 0;
 unsigned long lastNorthWaitLogMs = 0;
 uint8_t consecutiveTurns = 0;
+unsigned long northCheckCount = 0;
+char lastCheckAction = '-';          // T=turned F=on course S=<3 m, drive on N=GPS saw no movement X=stopped, no GPS progress
+double lastCheckMovedM = 0.0;
+double lastCheckLegM = 0.0;
+double lastCheckErrDeg = NAN;
 int motorTrim = MOTOR_TRIM_DEFAULT;  // +boosts left / -boosts right
 uint8_t lastMotorDir = 0;
 uint8_t lastMotorLeft = 0;
 uint8_t lastMotorRight = 0;
+uint8_t motorLeftOut = 0;            // PWM actually written, after trim
+uint8_t motorRightOut = 0;
+unsigned long motorAccountMs = 0;
+// Commanded run time since boot - no encoders, so not proof the wheels turned.
+unsigned long leftFwdMs = 0, leftBackMs = 0, rightFwdMs = 0, rightBackMs = 0;
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
 bool lcdReady = false;
 bool lcdHoldBoot = true;  // keep splash until setup() finishes
@@ -228,6 +257,8 @@ enum GpsNorthState : uint8_t {
 void handleGpsTest();
 void handleGpsNorthTest();
 void setMotors(uint8_t directionByte, uint8_t leftSpeed, uint8_t rightSpeed);
+void accountMotorTime();
+char sideDirection(uint8_t fwdBits, uint8_t backBits, uint8_t pwm);
 void moveStop();
 void lcdInit();
 void handleLcd();
@@ -242,6 +273,7 @@ void setMotorTrim(int value);
 void runStraightBiasTest();
 // ===================== GPS HELPERS =====================
 bool hasFreshGpsFix() {
+  // TinyGPS++ timestamps a location only when a valid NMEA sentence commits it.
   return gps.location.isValid() && gps.location.age() < GPS_FIX_MAX_AGE_MS;
 }
 uint32_t gpsFixAgeMs() {
@@ -250,7 +282,15 @@ uint32_t gpsFixAgeMs() {
 uint32_t gpsSatCount() {
   return gps.satellites.isValid() ? gps.satellites.value() : 0;
 }
+double gpsHdop() {
+  return gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
+}
+bool hasNavQualityFix() {
+  // Fresh coordinates alone are not enough: weak satellite geometry wanders enough to mis-steer.
+  return hasFreshGpsFix() && gpsSatCount() >= GPS_NAV_MIN_SATS && gpsHdop() <= GPS_NAV_MAX_HDOP;
+}
 double wrap180(double deg) {
+  // Return the signed shortest angular error, so west is negative and east is positive.
   while (deg > 180.0) deg -= 360.0;
   while (deg < -180.0) deg += 360.0;
   return deg;
@@ -258,14 +298,48 @@ double wrap180(double deg) {
 double headingErrorToNorth(double headingDeg) {
   return wrap180(headingDeg);
 }
+void sendGpsCommand(const char *body) {
+  // NMEA/PCAS checksums XOR the command body, excluding '$', '*', and the checksum digits.
+  uint8_t sum = 0;
+  for (const char *p = body; *p; p++) sum ^= (uint8_t)*p;
+  gpsSerial.printf("$%s*%02X\r\n", body, sum);
+  Serial.printf("[GPS] sent $%s*%02X\n", body, sum);
+}
 void gpsInit() {
+  gpsSerial.setRxBufferSize(1024);   // setup()'s blocking prints can outlast the 256-byte default
+  // UART1 pins are explicitly routed: module TX feeds ESP32 RX; ESP32 TX is optional.
   gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   lastGpsStatusMs = millis();
+  if (GPS_TX_PIN >= 0) {
+    sendGpsCommand("PCAS06,1");   // ATGM336H answers with $GPTXT,...,HW=ATGM336H
+    delay(100);
+    char cmd[16];
+    snprintf(cmd, sizeof(cmd), "PCAS11,%d", GPS_NAV_MODE);
+    sendGpsCommand(cmd);
+  }
+}
+void noteGpsChar(char c) {
+  // TinyGPS++ parses navigation sentences; this parallel line buffer retains receiver TXT diagnostics.
+  if (c == '$') gpsLineLen = 0;
+  if (c == '\r' || c == '\n') {
+    gpsLineBuf[gpsLineLen] = '\0';
+    if (gpsLineLen > 7 && strncmp(gpsLineBuf + 3, "TXT,", 4) == 0 &&
+        strcmp(gpsInfoLine, gpsLineBuf) != 0 &&
+        (gpsInfoLine[0] == '\0' || strstr(gpsLineBuf, "HW=") != nullptr)) {
+      strncpy(gpsInfoLine, gpsLineBuf, sizeof(gpsInfoLine) - 1);
+      gpsInfoPublished = false;
+    }
+    gpsLineLen = 0;
+    return;
+  }
+  if (gpsLineLen < sizeof(gpsLineBuf) - 1) gpsLineBuf[gpsLineLen++] = c;
 }
 void handleGpsTest() {
+  // Drain the UART frequently; the same bytes feed TinyGPS++, TXT capture, and optional raw logging.
   while (gpsSerial.available() > 0) {
     char gpsChar = (char)gpsSerial.read();
     gps.encode(gpsChar);
+    noteGpsChar(gpsChar);
     gpsDataSeen = true;
     gpsCharacterCount++;
     if (gpsChar == '\n') {
@@ -319,6 +393,7 @@ void handleWifi() {
     Serial.println("[WiFi] connection lost");
   }
   unsigned long now = millis();
+  // A failed hotspot must not block the navigation state machine with repeated connection attempts.
   if (now - lastWifiAttemptMs < WIFI_RETRY_INTERVAL_MS) return;
   lastWifiAttemptMs = now;
   Serial.println("[WiFi] retrying connection...");
@@ -347,13 +422,16 @@ const char *northStateStr() {
   }
 }
 void handleTelemetry() {
+  // mqtt.connect() can block for seconds, which would stretch a timed spin.
+  // Never enter a potentially blocking MQTT connect while a timed motor turn is in progress.
+  if (gpsNorthTestMode && gpsNorthState == NORTH_TURN) return;
   unsigned long now = millis();
   if (now - lastTelemetryMs < TELEMETRY_INTERVAL_MS) return;
   lastTelemetryMs = now;
   if (WiFi.status() != WL_CONNECTED || !mqttConnect()) return;
   const char *mode = gpsNorthTestMode ? "NORTH" : (continuousTestMode ? "LOOP" : "IDLE");
   char turnCh = (lastNorthTurnDir < 0) ? 'L' : ((lastNorthTurnDir > 0) ? 'R' : '-');
-  char logLine[160];
+  char logLine[320];
   if (gps.location.isValid()) {
     snprintf(logLine, sizeof(logLine),
              "t=%lu mode=%s st=%s lat=%.6f lng=%.6f hd=%.1f sats=%lu nmea=%lu ok=%lu bad=%lu turns=%d dir=%c",
@@ -368,8 +446,28 @@ void handleTelemetry() {
              gpsSentenceCount, (unsigned long)gps.passedChecksum(), (unsigned long)gps.failedChecksum(),
              consecutiveTurns, turnCh);
   }
+  size_t used = strlen(logLine);
+  snprintf(logLine + used, sizeof(logLine) - used,
+           " hdop=%.1f spd=%.1f chk=%lu act=%c mv=%.1f leg=%.1f stk=%u err=%.0f tms=%lu",
+           gpsHdop(), gps.speed.isValid() ? gps.speed.kmph() : 0.0, northCheckCount,
+           lastCheckAction, lastCheckMovedM, lastCheckLegM, (unsigned)stuckLegs, lastCheckErrDeg,
+           lastCheckAction == 'T' ? gpsNorthTurnMs : 0UL);
+  accountMotorTime();
+  used = strlen(logLine);
+  snprintf(logLine + used, sizeof(logLine) - used,
+           " mL=%c%u mR=%c%u Lf=%.1f Lb=%.1f Rf=%.1f Rb=%.1f",
+           sideDirection(LEFT_FWD_BITS, LEFT_BACK_BITS, motorLeftOut), (unsigned)motorLeftOut,
+           sideDirection(RIGHT_FWD_BITS, RIGHT_BACK_BITS, motorRightOut), (unsigned)motorRightOut,
+           leftFwdMs / 1000.0, leftBackMs / 1000.0, rightFwdMs / 1000.0, rightBackMs / 1000.0);
   feedLog.publish(logLine);
   Serial.printf("[Telemetry] %s\n", logLine);
+  if (!gpsInfoPublished) {
+    char infoLine[120];
+    snprintf(infoLine, sizeof(infoLine), "t=%lu gps-info nav=%d %s", millis() / 1000,
+             GPS_TX_PIN >= 0 ? GPS_NAV_MODE : -1, gpsInfoLine[0] ? gpsInfoLine : "no TXT seen yet");
+    gpsInfoPublished = feedLog.publish(infoLine);
+    Serial.printf("[Telemetry] %s\n", infoLine);
+  }
 }
 // ===================== LED HELPERS =====================
 void setExternalLeds(bool leftOn) {
@@ -472,7 +570,7 @@ void handleLcd() {
   if (lcdHoldBoot) return;
   if (now - lastLcdMs < LCD_REFRESH_MS) return;
   lastLcdMs = now;
-  const char *mode = "IDLE";
+  const char *mode = (lastCheckAction == 'X') ? "NOPROG" : "IDLE";
   if (gpsNorthTestMode) {
     switch (gpsNorthState) {
       case NORTH_WAIT_FOR_FIX:  mode = "HOLD";  break;
@@ -519,6 +617,7 @@ void handleLcd() {
 }
 // ===================== MOTOR CONTROL =====================
 int motorTrimAtSpeed(uint8_t speed) {
+  // Scale the calibrated PWM difference proportionally from its measured reference speed.
   return motorTrim * (int)speed / MOTOR_TRIM_REFERENCE_SPEED;
 }
 void writePwmDuty(uint8_t pin, uint8_t val) {
@@ -548,6 +647,26 @@ void setMotorTrim(int value) {
     setMotors(lastMotorDir, lastMotorLeft, lastMotorRight);
   }
 }
+// F/B/- for one side; its two motors share a PWM pin and always get the same direction.
+char sideDirection(uint8_t fwdBits, uint8_t backBits, uint8_t pwm) {
+  // This decodes the 74HC595 direction byte; PWM zero means that side is commanded off.
+  if (pwm == 0) return '-';
+  if (lastMotorDir & fwdBits) return 'F';
+  if (lastMotorDir & backBits) return 'B';
+  return '-';
+}
+void accountMotorTime() {
+  // Integrate the previous commanded state; these totals do not prove a wheel physically turned.
+  unsigned long now = millis();
+  unsigned long dt = now - motorAccountMs;
+  motorAccountMs = now;
+  char left = sideDirection(LEFT_FWD_BITS, LEFT_BACK_BITS, motorLeftOut);
+  char right = sideDirection(RIGHT_FWD_BITS, RIGHT_BACK_BITS, motorRightOut);
+  if (left == 'F') leftFwdMs += dt;
+  if (left == 'B') leftBackMs += dt;
+  if (right == 'F') rightFwdMs += dt;
+  if (right == 'B') rightBackMs += dt;
+}
 void motorInit() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
@@ -569,14 +688,14 @@ void motorInit() {
   digitalWrite(EN_PIN, LOW);   // OE active LOW
 }
 void setMotors(uint8_t directionByte, uint8_t leftSpeed, uint8_t rightSpeed) {
+  accountMotorTime();   // close out the previous command before replacing it
   lastMotorDir = directionByte;
   lastMotorLeft = leftSpeed;
   lastMotorRight = rightSpeed;
   uint8_t leftOut = leftSpeed;
   uint8_t rightOut = rightSpeed;
-  // Trim is a straight-line calibration. Applying it to an in-place spin makes
-  // the two sides unequal, so the car arcs instead of yawing and left/right
-  // turns sweep different angles for the same duration.
+  // Straight trim balances forward travel. Keep spin PWM equal on both sides so
+  // left and right turns remain comparable instead of introducing a trim-induced arc.
   bool isSpin = (directionByte == DIR_SPIN_LEFT || directionByte == DIR_SPIN_RIGHT);
   if (!isSpin) {
     if (leftSpeed > 0) {
@@ -586,6 +705,8 @@ void setMotors(uint8_t directionByte, uint8_t leftSpeed, uint8_t rightSpeed) {
       rightOut = clampPwm((int)rightSpeed - motorTrimAtSpeed(rightSpeed));
     }
   }
+  motorLeftOut = leftOut;
+  motorRightOut = rightOut;
   digitalWrite(EN_PIN, LOW);
   writePwmDuty(PWM1_PIN, rightOut);
   writePwmDuty(PWM2_PIN, leftOut);
@@ -621,21 +742,32 @@ void stopGpsNorthTest(const char *message) {
   gpsNorthFixHeldMs = 0;
   moveStop();
 }
+void startNorthLeg(unsigned long now) {
+  // A leg is one timed drive interval; its own baseline detects GPS no-progress independently
+  // of the longer heading baseline, which can span multiple legs while GPS catches up.
+  legStartLat = gps.location.lat();
+  legStartLng = gps.location.lng();
+  gpsNorthStepMs = now;
+  gpsNorthState = NORTH_DRIVE_FORWARD;
+  moveForward(GPS_NORTH_SPEED);
+}
 void handleGpsNorthTest() {
   if (!gpsNorthTestMode) return;
   unsigned long now = millis();
   switch (gpsNorthState) {
     case NORTH_WAIT_FOR_FIX:
+      // Stay stopped until nav-quality coordinates persist for the hold interval after startup/turn.
       moveStop();
-      if (!hasFreshGpsFix()) {
+      if (!hasNavQualityFix()) {
         gpsNorthFixHeldMs = 0;
         if (now - lastNorthWaitLogMs >= 2000) {
           lastNorthWaitLogMs = now;
-          Serial.printf("[North] Waiting for GPS lock | chars %lu | lines %lu | age %lu ms | sats %lu\n",
+          Serial.printf("[North] Waiting for GPS lock | chars %lu | lines %lu | age %lu ms | sats %lu | hdop %.1f\n",
                         gpsCharacterCount,
                         gpsSentenceCount,
                         gpsFixAgeMs(),
-                        gpsSatCount());
+                        gpsSatCount(),
+                        gpsHdop());
         }
         return;
       }
@@ -648,22 +780,23 @@ void handleGpsNorthTest() {
       if (now - gpsNorthFixHeldMs < GPS_NORTH_FIX_HOLD_MS) return;
       gpsNorthStartLat = gps.location.lat();
       gpsNorthStartLng = gps.location.lng();
-      gpsNorthStepMs = now;
       gpsNorthFixHeldMs = 0;
       drivingCourseDeg = -1.0;
-      gpsNorthState = NORTH_DRIVE_FORWARD;
+      stuckLegs = 0;
       Serial.printf("[North] Baseline lat %.6f lng %.6f. Driving forward for %.1f s\n",
                     gpsNorthStartLat, gpsNorthStartLng, GPS_NORTH_DRIVE_MS / 1000.0);
-      moveForward(GPS_NORTH_SPEED);
+      startNorthLeg(now);
       break;
-    case NORTH_DRIVE_FORWARD:
-      // A course fix is only meaningful while the wheels are actually turning;
-      // after the stop+settle the receiver reports leftover noise.
-      if (gps.course.isValid() && gps.course.age() < GPS_FIX_MAX_AGE_MS &&
+    case NORTH_DRIVE_FORWARD: {
+      // Sample Doppler course only while moving. A blank RMC field can leave TinyGPS++'s
+      // previous value looking fresh, so an unchanged course value is not accepted again.
+      double course = gps.course.isValid() ? gps.course.deg() : -1.0;
+      if (course >= 0.0 && course != lastSeenCourseDeg && gps.course.age() < GPS_FIX_MAX_AGE_MS &&
           gps.speed.isValid() && gps.speed.kmph() >= GPS_COURSE_MIN_KMPH) {
-        drivingCourseDeg = gps.course.deg();
+        drivingCourseDeg = course;
         drivingCourseMs = now;
       }
+      lastSeenCourseDeg = course;
       // Keep driving even if GPS age blips; cheap 1 Hz modules often exceed 2.5 s.
       if (now - gpsNorthStepMs >= GPS_NORTH_DRIVE_MS) {
         moveStop();
@@ -672,13 +805,15 @@ void handleGpsNorthTest() {
         Serial.println("[North] Stopped. Settling for GPS update...");
       }
       break;
+    }
     case NORTH_COMPARE: {
+      // Let a 1 Hz receiver publish a post-drive position before comparing or turning.
       if (now - gpsNorthStepMs < GPS_NORTH_SETTLE_MS) return;
-      if (!hasFreshGpsFix()) {
+      if (!hasNavQualityFix()) {
         if (now - lastNorthWaitLogMs >= 2000) {
           lastNorthWaitLogMs = now;
-          Serial.printf("[North] Settled, still no fresh location (age %lu ms). Waiting...\n",
-                        gpsFixAgeMs());
+          Serial.printf("[North] Settled, no usable fix (age %lu ms, sats %lu, hdop %.1f). Waiting...\n",
+                        gpsFixAgeMs(), gpsSatCount(), gpsHdop());
         }
         return;
       }
@@ -688,6 +823,30 @@ void handleGpsNorthTest() {
           gpsNorthStartLat, gpsNorthStartLng, currentLat, currentLng);
       double displacementCourse = TinyGPSPlus::courseTo(
           gpsNorthStartLat, gpsNorthStartLng, currentLat, currentLng);
+      double legM = TinyGPSPlus::distanceBetween(
+          legStartLat, legStartLng, currentLat, currentLng);
+      northCheckCount++;
+      lastCheckMovedM = movedM;
+      lastCheckLegM = legM;
+      lastCheckErrDeg = NAN;
+      // If GPS barely moved, avoid steering from stale/noisy data. Keep the longer heading
+      // baseline so a later catch-up position can still reveal the net travel direction.
+      if (legM < GPS_STUCK_LEG_M) {
+        stuckLegs++;
+        if (stuckLegs >= GPS_STUCK_MAX_LEGS) {
+          Serial.printf("[North] GPS moved under %.1f m per leg for %d legs - receiver not tracking, or car stuck/circling. Stopping.\n",
+                        GPS_STUCK_LEG_M, GPS_STUCK_MAX_LEGS);
+          lastCheckAction = 'X';
+          stopGpsNorthTest(nullptr);
+          return;
+        }
+        Serial.printf("[North] GPS saw only %.1fm this leg (%d/%d), driving on without steering\n",
+                      legM, stuckLegs, GPS_STUCK_MAX_LEGS);
+        lastCheckAction = 'N';
+        startNorthLeg(now);
+        break;
+      }
+      stuckLegs = 0;
       bool hasCourse = (drivingCourseDeg >= 0.0) &&
                        (now - drivingCourseMs) < (GPS_NORTH_SETTLE_MS + GPS_NORTH_DRIVE_MS);
       double instantCourse = hasCourse ? drivingCourseDeg : -1.0;
@@ -697,6 +856,8 @@ void handleGpsNorthTest() {
       // course (independent of position noise) if it has one.
       bool haveReliableHeading = false;
       double heading = 0.0;
+      // Position-derived course is trusted only after enough displacement; below that,
+      // use a fresh Doppler course if available, otherwise collect another leg.
       if (movedM >= GPS_NORTH_MIN_RELIABLE_MOVE_M) {
         heading = displacementCourse;
         haveReliableHeading = true;
@@ -711,35 +872,35 @@ void handleGpsNorthTest() {
         // Don't guess a turn from noise - keep driving so the next check has
         // a longer, more trustworthy displacement to measure against.
         Serial.printf("[North] move %.1fm too small for a reliable heading, driving on\n", movedM);
-        gpsNorthStepMs = now;
-        gpsNorthState = NORTH_DRIVE_FORWARD;
-        moveForward(GPS_NORTH_SPEED);
+        lastCheckAction = 'S';
+        startNorthLeg(now);
         break;
       }
       double err = headingErrorToNorth(heading);
+      lastCheckErrDeg = err;
       bool goingNorth = fabs(err) <= GPS_COURSE_TOLERANCE_DEG;
       Serial.printf("[North] move %.1fm hd %.0f inst %.0f err %.0f sats %lu\n",
                     movedM, heading, instantCourse, err, gpsSatCount());
       if (goingNorth) {
+        // Reset the heading baseline only after a reliable on-course decision.
         gpsNorthStartLat = currentLat;
         gpsNorthStartLng = currentLng;
-        gpsNorthStepMs = now;
         consecutiveTurns = 0;
         lastNorthTurnDir = 0;
-        gpsNorthState = NORTH_DRIVE_FORWARD;
+        lastCheckAction = 'F';
         Serial.println("[North] Heading looks good → continue forward");
-        moveForward(GPS_NORTH_SPEED);
+        startNorthLeg(now);
       } else {
         if (consecutiveTurns >= GPS_MAX_CONSECUTIVE_TURNS) {
           stopGpsNorthTest("[North] Too many consecutive turns – stopping for safety.");
           return;
         }
         consecutiveTurns++;
+        lastCheckAction = 'T';
         gpsNorthStepMs = now;
         gpsNorthState = NORTH_TURN;
-        // Open-loop turns must be scaled to the error. A fixed duration
-        // overshoots small corrections and undershoots large ones, which is
-        // what made the heading oscillate around north instead of settling.
+        // Open-loop spin time is proportional to angular error, then bounded to
+        // avoid ineffective tiny pulses and unsafe long turns.
         double turnMs = (fabs(err) / GPS_NORTH_TURN_DEG_PER_SEC) * 1000.0;
         if (turnMs < GPS_NORTH_TURN_MIN_MS) turnMs = GPS_NORTH_TURN_MIN_MS;
         if (turnMs > GPS_NORTH_TURN_MAX_MS) turnMs = GPS_NORTH_TURN_MAX_MS;
@@ -767,6 +928,7 @@ void handleGpsNorthTest() {
         moveStop();
         gpsNorthFixHeldMs = 0;
         drivingCourseDeg = -1.0;              // stale: it predates the turn
+        // Turning changes the heading baseline; wait for a new stable fix before driving again.
         gpsNorthState = NORTH_WAIT_FOR_FIX;   // force new baseline after turn
         Serial.println("[North] Turn finished. Taking new baseline.");
       }
