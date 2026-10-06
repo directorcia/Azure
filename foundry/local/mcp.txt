@@ -1,0 +1,415 @@
+
+Target architecture
+
+Copilot Studio
+      |
+      | HTTPS + MCP Streamable HTTP
+      v
+Python MCP Server
+      |
+      | OpenAI-compatible REST API
+      v
+Foundry Local
+      |
+      v
+Phi / Qwen / other local model
+
+
+This example creates one MCP tool:
+
+ask_foundry_local
+
+Copilot Studio can invoke that tool and pass a prompt to your local model.
+
+Phase 1: Verify Foundry Local
+Step 1: Start Foundry Local
+
+In PowerShell:
+
+foundry server start
+
+Check it:
+
+foundry server status
+
+Record the endpoint shown by Foundry Local. The port can vary between installations or runs, so do not assume a port from another setup. If you want a fixed port, start the service with `foundry server start --port <port>` and confirm it with `foundry server status`.
+
+Foundry Local provides an optional OpenAI-compatible web server and supports the /v1/chat/completions API.
+
+For the examples below, replace `<PORT>` with the port from `foundry server status`:
+
+http://127.0.0.1:<PORT>/v1
+
+Verify the OpenAI-compatible models endpoint before continuing:
+
+$foundryBaseUrl = "http://127.0.0.1:<PORT>/v1"
+Invoke-RestMethod "$foundryBaseUrl/models"
+
+Step 2: Identify the model ID
+
+Run:
+
+foundry model list
+
+Choose a chat model and record the exact model ID or alias shown by Foundry Local. `foundry model list` can show catalog entries, while `foundry model list --loaded` shows models currently loaded by the service.
+
+The following is only an example; use a model ID or alias that your local service accepts:
+
+phi-4-mini
+
+Replace it with your actual model ID.
+
+Phase 2: Create the MCP wrapper
+Step 3: Create a project directory
+mkdir C:\FoundryLocalMCP
+cd C:\FoundryLocalMCP
+
+Step 4: Create a Python environment
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+If PowerShell blocks activation, use:
+
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+
+Step 5: Install the packages
+python -m pip install --upgrade pip
+pip install "mcp[cli]>=1.28,<2" fastapi uvicorn openai
+
+This example uses the MCP Python SDK v1 API (`mcp.server.fastmcp.FastMCP`). Pinning below v2 is intentional: the v2 line renamed `FastMCP` to `MCPServer` and changed the import/API. Python 3.10 or later is required by the current SDK.
+
+Step 6: Create mcp_server.py
+
+Run:
+
+notepad mcp_server.py
+
+Paste:
+
+import asyncio
+import contextlib
+import logging
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from mcp.server.fastmcp import FastMCP
+from openai import OpenAI
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+FOUNDRY_BASE_URL = os.environ["FOUNDRY_BASE_URL"]
+FOUNDRY_MODEL = os.environ["FOUNDRY_MODEL"]
+
+
+# Foundry Local does not normally require a real API key.
+foundry_client = OpenAI(
+    base_url=FOUNDRY_BASE_URL,
+    api_key="notneeded"
+)
+
+
+# Stateless HTTP is appropriate for a remotely callable MCP tool.
+mcp = FastMCP(
+    "FoundryLocalMCP",
+    stateless_http=True
+)
+
+
+@mcp.tool()
+async def ask_foundry_local(
+    prompt: str,
+    system_instruction: str = (
+        "You are a helpful local AI assistant. "
+        "Provide a concise and accurate answer."
+    )
+) -> str:
+    """
+    Ask the locally hosted Foundry Local language model a question.
+
+    Use this tool when the user explicitly requests analysis or generation
+    from the Foundry Local model. The prompt is sent to a model running on
+    the MCP server's host computer.
+    """
+
+    def call_foundry() -> str:
+        response = foundry_client.chat.completions.create(
+            model=FOUNDRY_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_instruction
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.2,
+            max_tokens=1000
+        )
+
+        return response.choices[0].message.content or ""
+
+    return await asyncio.to_thread(call_foundry)
+
+
+@mcp.tool()
+async def get_foundry_status() -> dict:
+    """
+    Check whether the configured Foundry Local endpoint is available and
+    return the configured endpoint and model.
+    """
+
+    def check_status() -> dict[str, object]:
+        try:
+            models = foundry_client.models.list()
+
+            return {
+                "available": True,
+                "endpoint": FOUNDRY_BASE_URL,
+                "configured_model": FOUNDRY_MODEL,
+                "visible_models": [
+                    model.id for model in models.data
+                ]
+            }
+        except Exception:
+            logger.exception("Foundry Local status check failed")
+            return {
+                "available": False,
+                "endpoint": FOUNDRY_BASE_URL,
+                "configured_model": FOUNDRY_MODEL,
+                "error": "Foundry Local status check failed; see MCP server logs."
+            }
+
+    return await asyncio.to_thread(check_status)
+
+
+@asynccontextmanager
+async def mcp_lifespan(app: FastAPI):
+    async with contextlib.AsyncExitStack() as stack:
+        await stack.enter_async_context(mcp.session_manager.run())
+        yield
+
+
+app = FastAPI(
+    title="Foundry Local MCP Server",
+    lifespan=mcp_lifespan
+)
+
+# FastMCP's own Streamable HTTP path is /mcp.
+# Mounting it here produces the final path /mcp/mcp.
+app.mount("/mcp", mcp.streamable_http_app())
+
+
+@app.get("/health")
+async def health():
+    # Liveness only: Foundry readiness is checked by get_foundry_status.
+    return {
+        "status": "running",
+        "mcp_endpoint": "/mcp/mcp"
+    }
+
+
+The MCP SDK documents mounting its Streamable HTTP application in an ASGI host and explicitly starting the MCP session manager in the host app's lifespan. Here, the MCP app's `/mcp` route is mounted under `/mcp`, so the complete endpoint is `/mcp/mcp`.
+
+Phase 3: Configure and test locally
+Step 7: Set the Foundry variables
+
+In the same PowerShell window:
+
+$env:FOUNDRY_BASE_URL = "http://127.0.0.1:<PORT>/v1"
+$env:FOUNDRY_MODEL = "<MODEL-ID-FROM-FOUNDRY-MODEL-LIST>"
+
+Replace both placeholders with the endpoint and model ID/alias verified in Phase 1.
+
+Step 8: Start the MCP server
+uvicorn mcp_server:app --host 127.0.0.1 --port 8000
+
+Leave that PowerShell window open.
+
+Uvicorn should listen only on loopback port 8000. The tunnel will connect to this local address; the MCP server does not need to listen on every network interface.
+
+Step 9: Test the health endpoint
+
+Open another PowerShell window:
+
+Invoke-RestMethod http://localhost:8000/health
+
+Expected output should include:
+
+status            : running
+mcp_endpoint      : /mcp/mcp
+
+This `/health` endpoint is a liveness check for the Python app only. It does not confirm that Foundry Local is reachable or that the configured model can generate a response. Use `get_foundry_status` to check whether the Foundry API responds, then test inference separately.
+
+The MCP endpoint is therefore:
+
+http://localhost:8000/mcp/mcp
+
+Do not try to open the MCP URL as a normal website and expect a webpage. It is a protocol endpoint.
+
+Before exposing the server through a tunnel, use the MCP Inspector or another MCP client to connect to `http://127.0.0.1:8000/mcp/mcp`. Confirm that both tools are discovered, then call `get_foundry_status` and `ask_foundry_local`. This separates MCP/server problems from Copilot Studio or tunnel problems.
+
+Phase 4: Make the local MCP server reachable
+
+Copilot Studio requires the MCP server URL to be reachable from its cloud service. An address such as localhost, 127.0.0.1 or a private LAN address will not work.
+
+For a training demonstration, a temporary HTTPS tunnel is the quickest option. For production, use a stable hosted endpoint with proper authentication.
+
+Step 10: Install Cloudflare Tunnel
+winget install Cloudflare.cloudflared
+
+Close and reopen PowerShell if cloudflared is not immediately recognised.
+
+Verify:
+
+cloudflared --version
+
+Step 11: Create a temporary tunnel
+
+Keep the MCP server running, then open another PowerShell window and run:
+
+cloudflared tunnel --url http://localhost:8000
+
+Cloudflare will display a temporary HTTPS address similar to:
+
+https://example-words.trycloudflare.com
+
+Quick Tunnels provide a temporary public address for a local service and are intended for testing and development, not production.
+
+Your public MCP URL becomes:
+
+https://example-words.trycloudflare.com/mcp/mcp
+
+
+Use the exact hostname displayed on your machine.
+
+Important security warning
+
+With no authentication, anyone who has that URL could potentially call the MCP tools and use your local model. HTTPS encrypts traffic in transit; it does not authenticate callers. For a controlled training demonstration:
+
+Start the tunnel immediately before the demo.
+Do not send sensitive prompts or data: prompts and responses pass through Copilot Studio and the public tunnel even though inference runs locally.
+Stop the tunnel when finished.
+Do not use this design as a production service.
+
+For anything beyond a tightly controlled demo, require authentication in the MCP server or a trusted gateway, and configure matching authentication in Copilot Studio. Selecting an API key or OAuth in Copilot Studio is not sufficient unless the server/gateway validates it. Also add request-size limits, rate limiting, logging, and monitoring. Never expose Foundry Local's own inference endpoint through the tunnel.
+
+The SDK may also reject requests addressed to a public tunnel hostname because of Host/DNS-rebinding protection. If the MCP endpoint returns `421 Misdirected Request`, configure the SDK transport security to allow only the exact hostname assigned to your tunnel. Do not disable host validation or allow arbitrary hosts; consult the documentation for the pinned SDK version.
+
+Phase 5: Add it to Copilot Studio
+Step 12: Enable generative orchestration
+
+Open your Copilot Studio agent and ensure it is using generative orchestration. MCP tools require generative orchestration.
+
+Step 13: Open the MCP onboarding wizard
+
+In your agent:
+
+Open Tools.
+Select Add a tool.
+Select New tool.
+Select Model Context Protocol.
+
+This is Microsoft’s recommended onboarding path for an existing MCP server.
+
+Step 14: Enter the MCP server details
+
+Use values similar to:
+
+Server name
+
+Foundry Local MCP
+
+
+Description
+
+Provides access to a language model running on the Foundry Local host. Use it when the user explicitly asks to send a prompt to that model or check whether the local Foundry endpoint is reachable. Prompts are sent through Copilot Studio and the MCP server to the local model.
+
+
+Server URL
+
+https://YOUR-TUNNEL.trycloudflare.com/mcp/mcp
+
+
+Authentication
+
+None
+
+
+Select Create.
+
+Copilot Studio currently supports Streamable HTTP for MCP servers. Its onboarding wizard accepts no authentication, an API key or OAuth 2.0.
+
+Step 15: Create the connection
+
+After the server has been discovered:
+
+Review the available tools.
+Confirm you see:
+ask_foundry_local
+get_foundry_status
+Create the connection.
+Add the tools to the agent.
+Save the agent.
+
+Tool names, descriptions, parameters and outputs published by an MCP server become available to the Copilot Studio agent. Clear tool descriptions help the orchestrator decide when to invoke them.
+
+Phase 6: Test it
+Step 16: Test Foundry endpoint status
+
+In Copilot Studio’s test pane, enter:
+
+Use the Foundry Local tool to check whether the local Foundry endpoint is responding and which models it reports.
+
+
+You should see the get_foundry_status tool invoked.
+
+Step 17: Test inference
+
+Enter:
+
+Use the Foundry Local model to explain vector databases in five bullet points.
+
+
+The flow should be:
+
+Copilot Studio
+   -> MCP tool invocation
+   -> public HTTPS tunnel
+   -> local Python MCP server
+   -> Foundry Local /v1/chat/completions
+   -> local model
+   -> result returned to Copilot Studio
+
+Step 18: Review the tool invocation
+
+Use Copilot Studio’s activity or test information to confirm that the MCP server and specific tool were invoked. Microsoft documents MCP tool visibility and tracing within Copilot Studio.
+
+Phase 7: Stop the demonstration safely
+
+When finished, stop the tunnel with Ctrl+C.
+
+Stop the MCP application with Ctrl+C in its PowerShell window.
+
+Foundry Local can remain running, or you can stop its server separately.
+
+What this solution does and does not do
+It does
+Expose Foundry Local as a callable Copilot Studio tool.
+Keep the actual model inference on your local computer.
+Allow Copilot Studio to send selected prompts to the local model.
+Demonstrate MCP, local inference and cloud orchestration together.
+It does not
+Replace the primary model used by Copilot Studio.
+Make Copilot Studio itself run locally.
+Keep prompts and responses entirely on the local machine; requests originate in Copilot Studio and travel through an Internet-accessible MCP endpoint before local inference.
+Automatically provide the local model with Microsoft 365 permissions or user identity.
+Provide production-grade authentication, availability, auditing or rate limiting.
+
+For a training session, this is a useful demonstration with the safeguards above. For production, run the MCP wrapper in a managed HTTPS service, enforce API-key or OAuth authentication, keep the network path to the inference host private, and add request logging, input and output limits, rate limiting, monitoring, and strict tool boundaries.

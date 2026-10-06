@@ -1,0 +1,131 @@
+mkdir C:\LocalRAG
+cd C:\LocalRAG
+
+python -m venv .venv
+.\.venv\Scripts\activate
+
+pip install foundry-local-sdk
+pip install chromadb
+pip install openai
+pip install pypdf
+pip install python-docx
+
+mkdir documents
+
+add document to directory
+
+build_vectors.py
+
+import chromadb
+
+client = chromadb.PersistentClient(path="./vectordb")
+
+collection = client.get_or_create_collection(
+    name="knowledgebase"
+)
+
+documents = [
+    "Microsoft 365 uses Entra ID for identity.",
+    "The Privacy Act contains a small business exemption.",
+    "Foundry Local can run models entirely on device."
+]
+
+for i, doc in enumerate(documents):
+    collection.add(
+        ids=[str(i)],
+        documents=[doc]
+    )
+
+print("Vector database created")
+
+python build_vectors.py
+
+search.py
+
+import chromadb
+
+client = chromadb.PersistentClient(path="./vectordb")
+
+collection = client.get_collection(
+    name="knowledgebase"
+)
+
+results = collection.query(
+    query_texts=[
+        "What is the Privacy Act exemption?"
+    ],
+    n_results=3
+)
+
+print(results)
+
+python search.py
+
+rag_chat.py
+
+Question
+   |
+Vector Search
+   |
+Relevant Chunks
+   |
+Foundry Local Model
+   |
+Grounded Answer
+
+results = collection.query(
+    query_texts=[question],
+    n_results=3
+)
+
+context = "\n".join(results["documents"][0])
+
+prompt = f"""
+Answer only from this information.
+
+{context}
+
+Question:
+{question}
+"""
+
+Install Qdrant
+--------------
+
+docker run -d `
+  --name qdrant `
+  -p 6333:6333 `
+  -v qdrant_storage:/qdrant/storage `
+  qdrant/qdrant
+
+docker ps
+
+http://localhost:6333/dashboard
+
+docker inspect open-webui > openwebui-backup.json
+
+docker stop open-webui
+
+docker rm open-webui
+
+docker run -d `
+  -p 3000:8080 `
+  --add-host=host.docker.internal:host-gateway `
+  -v open-webui:/app/backend/data `
+  -e WEBUI_SECRET_KEY=PASTE_YOUR_SECRET_HERE `
+  -e VECTOR_DB=qdrant `
+  -e QDRANT_URI=http://host.docker.internal:6333 `
+  --name open-webui `
+  --restart always `
+  ghcr.io/open-webui/open-webui:main
+
+docker logs -f open-webui
+
+  Workspace
+    |
+    +-- Knowledge
+
+http://localhost:6333/dashboard
+
+Check collections
+

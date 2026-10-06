@@ -31,9 +31,13 @@ foundry config set port 5272 # set static port
 foundry server restart
 
 ---- PS Start ----
+# foundry-test.ps1
+# verify foundry basic opertion
 Invoke-RestMethod `
   -Uri "http://127.0.0.1:63572/v1/models"
 
+# foundry-prompt.ps1
+# send a prompt to foundry
 $body = @{
     model = "Phi-4-mini-instruct-cuda-gpu"
     messages = @(
@@ -43,6 +47,13 @@ $body = @{
         }
     )
 } | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:63572/v1/chat/completions" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+
 ----- PS End ----
 
 ---- Load Start ----

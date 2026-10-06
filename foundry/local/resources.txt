@@ -35,3 +35,8 @@ Copilot Managed Runtime CLI command reference (preview) - https://learn.microsof
 WorkIQ CLI - https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/cli
 /plugin marketplace add microsoft/work-iq
 
+Vector database
+---------------
+
+What is a Vector Database? Powering Semantic Search & AI Applications - https://www.youtube.com/watch?v=gl1r1XV0SLw
+Vector Databases Explained - https://www.youtube.com/watch?v=4pUYfY-b5CQ
