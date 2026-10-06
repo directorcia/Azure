@@ -20,4 +20,18 @@ Open WebUI
 ----------
 Documentation - https://docs.openwebui.com/
 
+Ollama
+------
+Official site - https://ollama.com/
+Documentation - https://docs.ollama.com/index
+Quickstart - https://ollama.readthedocs.io/en/quickstart/
+
+Copilot CLI
+-----------
+Github Copilot CLI - https://docs.github.com/en/copilot/concepts/copilot-surfaces/copilot-cli
+Install Github Copilot CLI - https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli
+Using GitHub Copilot CLI - https://docs.github.com/en/copilot/how-tos/copilot-cli/use-copilot-cli/overview
+Copilot Managed Runtime CLI command reference (preview) - https://learn.microsoft.com/en-us/microsoft-365/managed-apps/developer/ms-cli-command-reference?view=o365-worldwide
+WorkIQ CLI - https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/cli
+/plugin marketplace add microsoft/work-iq
 
