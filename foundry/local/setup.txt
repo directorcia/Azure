@@ -14,6 +14,26 @@ Set-ExecutionPolicy Unrestricted -Scope currentuser -Force
 # Prequisite
 Winget install Microsoft.vcredist.2015+.x64
 
+# Utilities
+winget install --id Git.Git -e --source winget
+
+md c:\directorcia
+cd c:\directorcia
+Git clone https://github.com/directorcia/Azure
+
+winget install Microsoft.VisualStudioCode
+
+code --install-extension ms-windows-ai-studio.windows-ai-studio
+
+code --install-extension ms-python.python
+
+code --install-extension ms-toolsai.jupyter
+
+code --install-extension GitHub.copilot
+
+code --install-extension GitHub.copilot-chat
+
+
 # Monitoring
 https://www.hwinfo.com/
 nvidia-smi -l 1
