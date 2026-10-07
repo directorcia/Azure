@@ -33,13 +33,14 @@ code --install-extension GitHub.copilot
 
 code --install-extension GitHub.copilot-chat
 
-
 # Monitoring
 https://www.hwinfo.com/
 nvidia-smi -l 1
 https://www.techpowerup.com/gpuz/
 https://www.msi.com/Landing/afterburner/graphics-cards
 https://librehardwaremonitor.net/
+Os mantic appliance - https://github.com/Osmantic/ODS
+GitHub - ArcadeRenegade/SidebarDiagnostics: A simple sidebar for Windows desktop that displays hardware diagnostic information. · GitHub
 
 Foundry Local
 -------------
@@ -89,6 +90,14 @@ Invoke-RestMethod `
 
 # Window 1 - PowerShell
 nvidia-smi -l 1
+
+or
+
+while ($true) {
+	Clear-Host
+	nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw --format=csv
+Start-Sleep 1
+}
 
 # Window 2 - PowerShell
 foundry server status
@@ -209,7 +218,7 @@ Models
 
 
 Ollama
-
+------
 winget install Ollama.Ollama
 
 ollama --version
@@ -247,7 +256,7 @@ Restart
 Update ollama context window
 
 N8N
-
+---
 docker volume create n8n_data
 
 docker run -d --name n8n -p 5678:5678 -v n8n_data:/home/node/.n8n --restart unless-stopped n8nio/n8n
@@ -300,18 +309,6 @@ Hermes
 
 Workiq
 Sharepoint search connector
-
-Os mantic appliance - https://github.com/Osmantic/ODS
-
-HWiNFO64 - HWiNFO - Free System Information, Monitoring and Diagnostics
-
-GitHub - ArcadeRenegade/SidebarDiagnostics: A simple sidebar for Windows desktop that displays hardware diagnostic information. · GitHub
-
-while ($true) {
-	Clear-Host
-	nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw --format=csv
-Start-Sleep 1
-}
 
 Opencode
 
