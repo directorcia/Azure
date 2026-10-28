@@ -1,0 +1,1218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A local simulation of the ESP32 robot-arm pose controller interface.">
+  <title>Robot Arm | Pose Controller Demo</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --cp-bg: #f7f4ef;
+      --cp-bg-elevated: #fcfbf8;
+      --cp-surface: #ffffff;
+      --cp-surface-soft: #f5f5f5;
+      --cp-border: #dedede;
+      --cp-border-strong: #919191;
+      --cp-text: #242424;
+      --cp-text-muted: #5c5c5c;
+      --cp-text-soft: #6f6f6f;
+      --cp-accent: #b11f4b;
+      --cp-accent-hover: #9a1a41;
+      --cp-accent-soft: rgba(177, 31, 75, 0.08);
+      --cp-accent-fg: #ffffff;
+      --cp-success: #16a34a;
+      --cp-danger: #dc2626;
+      --cp-warning: #f59e0b;
+      --cp-link: #0078d4;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.12);
+      --cp-overlay: rgba(255, 255, 255, 0.8);
+      --cp-panel: rgba(255, 255, 255, 0.86);
+      --cp-panel-strong: rgba(255, 255, 255, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.55);
+      --cp-highlight: rgba(177, 31, 75, 0.12);
+    }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --cp-bg: #3d3b3a;
+      --cp-bg-elevated: #343231;
+      --cp-surface: #292929;
+      --cp-surface-soft: #2e2e2e;
+      --cp-border: #474747;
+      --cp-border-strong: #5f5f5f;
+      --cp-text: #dedede;
+      --cp-text-muted: #919191;
+      --cp-text-soft: #b0b0b0;
+      --cp-accent: #fd8ea1;
+      --cp-accent-hover: #fb7b91;
+      --cp-accent-soft: rgba(253, 142, 161, 0.14);
+      --cp-accent-fg: #1a1a1a;
+      --cp-success: #4ade80;
+      --cp-danger: #f87171;
+      --cp-warning: #fbbf24;
+      --cp-link: #4da6ff;
+      --cp-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+      --cp-overlay: rgba(41, 41, 41, 0.88);
+      --cp-panel: rgba(41, 41, 41, 0.72);
+      --cp-panel-strong: rgba(41, 41, 41, 0.96);
+      --cp-sheen: rgba(255, 255, 255, 0.04);
+      --cp-highlight: rgba(253, 142, 161, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--cp-bg);
+      color: var(--cp-text);
+      font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.5;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid var(--cp-link);
+      outline-offset: 2px;
+    }
+
+    .shell {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 32px 0 48px;
+    }
+
+    .topbar,
+    .brand,
+    .status,
+    .card-heading,
+    .joint-heading,
+    .pose-heading,
+    .actions,
+    .section-heading {
+      display: flex;
+      align-items: center;
+    }
+
+    .topbar,
+    .card-heading,
+    .pose-heading,
+    .section-heading {
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      gap: 12px;
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border: 1px solid var(--cp-border);
+      border-radius: 12px;
+      background: var(--cp-surface);
+      color: var(--cp-accent);
+    }
+
+    .brand-mark svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    .brand-name {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .brand-caption,
+    .eyebrow,
+    .muted,
+    .small-note {
+      color: var(--cp-text-muted);
+    }
+
+    .brand-caption {
+      margin: 1px 0 0;
+      font-size: 12px;
+    }
+
+    .status {
+      gap: 8px;
+      padding: 7px 11px;
+      border: 1px solid var(--cp-border);
+      border-radius: 999px;
+      background: var(--cp-surface);
+      color: var(--cp-text-muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--cp-warning);
+    }
+
+    .status.is-armed .status-dot {
+      background: var(--cp-success);
+    }
+
+    .intro {
+      padding: 42px 0 26px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 5vw, 40px);
+      letter-spacing: -0.035em;
+      line-height: 1.12;
+    }
+
+    .intro-copy {
+      max-width: 650px;
+      margin: 12px 0 0;
+      color: var(--cp-text-muted);
+      font-size: 15px;
+    }
+
+    .demo-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin: 0 0 22px;
+      padding: 14px 16px;
+      border: 1px solid var(--cp-border);
+      border-left: 4px solid var(--cp-accent);
+      border-radius: 10px;
+      background: var(--cp-surface);
+      font-size: 13px;
+    }
+
+    .demo-banner strong {
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .demo-banner p {
+      margin: 0;
+      color: var(--cp-text-muted);
+    }
+
+    .demo-icon {
+      flex: 0 0 auto;
+      color: var(--cp-accent);
+      font-weight: 800;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.18fr) minmax(330px, 0.82fr);
+      align-items: start;
+      gap: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .card {
+      overflow: hidden;
+      border: 1px solid var(--cp-border);
+      border-radius: 16px;
+      background: var(--cp-surface);
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.14);
+    }
+
+    .card-body {
+      padding: 20px;
+    }
+
+    .card-heading {
+      margin-bottom: 16px;
+    }
+
+    h2,
+    h3 {
+      margin: 0;
+      letter-spacing: -0.015em;
+    }
+
+    h2 {
+      font-size: 17px;
+    }
+
+    h3 {
+      font-size: 14px;
+    }
+
+    .small-note {
+      margin: 4px 0 0;
+      font-size: 12px;
+    }
+
+    .badge {
+      padding: 4px 8px;
+      border: 1px solid var(--cp-border);
+      border-radius: 999px;
+      color: var(--cp-text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .arm-stage {
+      display: grid;
+      min-height: 320px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid var(--cp-border);
+      border-radius: 12px;
+      background:
+        linear-gradient(var(--cp-surface-soft) 1px, transparent 1px),
+        linear-gradient(90deg, var(--cp-surface-soft) 1px, transparent 1px),
+        var(--cp-bg-elevated);
+      background-size: 28px 28px;
+    }
+
+    .arm-stage svg {
+      width: min(100%, 520px);
+      height: 320px;
+    }
+
+    .arm-link {
+      fill: none;
+      stroke: var(--cp-text-muted);
+      stroke-linecap: round;
+      stroke-width: 24;
+    }
+
+    .arm-link-highlight {
+      fill: none;
+      stroke: var(--cp-surface);
+      stroke-linecap: round;
+      stroke-width: 11;
+    }
+
+    .joint {
+      fill: var(--cp-surface);
+      stroke: var(--cp-border-strong);
+      stroke-width: 4;
+    }
+
+    .joint-cap {
+      fill: var(--cp-accent);
+    }
+
+    .joint-bolt {
+      fill: var(--cp-surface);
+    }
+
+    .arm-base {
+      fill: var(--cp-border-strong);
+      stroke: var(--cp-text-muted);
+      stroke-width: 2;
+    }
+
+    .arm-base-detail {
+      fill: var(--cp-surface-soft);
+      stroke: var(--cp-border-strong);
+      stroke-width: 2;
+    }
+
+    .arm-gripper {
+      fill: none;
+      stroke: var(--cp-accent);
+      stroke-linecap: square;
+      stroke-linejoin: round;
+      stroke-width: 8;
+    }
+
+    .arm-ground {
+      stroke: var(--cp-border-strong);
+      stroke-dasharray: 5 6;
+      stroke-width: 2;
+    }
+
+    .joint-key {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .joint-key-item {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid var(--cp-border);
+      border-radius: 10px;
+      background: var(--cp-bg-elevated);
+    }
+
+    .joint-key-number {
+      display: grid;
+      width: 25px;
+      height: 25px;
+      flex: 0 0 25px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--cp-accent);
+      color: var(--cp-accent-fg);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .joint-key-text {
+      min-width: 0;
+    }
+
+    .joint-key-name {
+      display: block;
+      overflow: hidden;
+      color: var(--cp-text);
+      font-size: 10px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .joint-key-angle {
+      display: block;
+      color: var(--cp-text-muted);
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: 10px;
+    }
+
+    .stage-caption {
+      margin: 10px 0 0;
+      color: var(--cp-text-muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .actions {
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .button {
+      min-height: 40px;
+      padding: 9px 14px;
+      border: 1px solid var(--cp-border-strong);
+      border-radius: 10px;
+      background: var(--cp-surface);
+      color: var(--cp-text);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+
+    .button:hover:not(:disabled) {
+      border-color: var(--cp-accent);
+      transform: translateY(-1px);
+    }
+
+    .button-primary {
+      border-color: var(--cp-accent);
+      background: var(--cp-accent);
+      color: var(--cp-accent-fg);
+    }
+
+    .button-primary:hover:not(:disabled) {
+      border-color: var(--cp-accent-hover);
+      background: var(--cp-accent-hover);
+    }
+
+    .button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .grid-picker {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      max-width: 280px;
+      margin: 0 auto;
+    }
+
+    .box-button {
+      position: relative;
+      display: grid;
+      min-height: 62px;
+      place-items: center;
+      border: 1px solid var(--cp-border);
+      border-radius: 10px;
+      background: var(--cp-bg-elevated);
+      color: var(--cp-text-muted);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .box-button:hover {
+      border-color: var(--cp-accent);
+    }
+
+    .box-button[aria-pressed="true"] {
+      border: 2px solid var(--cp-accent);
+      background: var(--cp-accent-soft);
+      color: var(--cp-accent);
+    }
+
+    .box-button.is-saved::after {
+      position: absolute;
+      top: 6px;
+      right: 7px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--cp-success);
+      content: "";
+    }
+
+    .selection-note {
+      margin: 12px 0 0;
+      color: var(--cp-text-muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .joint-list {
+      display: grid;
+      gap: 16px;
+    }
+
+    .joint-control {
+      display: grid;
+      gap: 6px;
+    }
+
+    .joint-heading {
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .joint-name {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .angle-value {
+      min-width: 56px;
+      color: var(--cp-accent);
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .range-row {
+      display: grid;
+      grid-template-columns: 24px 1fr 24px;
+      align-items: center;
+      gap: 8px;
+      color: var(--cp-text-soft);
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: 10px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      margin: 8px 0;
+      border-radius: 99px;
+      accent-color: var(--cp-accent);
+      cursor: pointer;
+    }
+
+    input[type="range"]:disabled {
+      cursor: not-allowed;
+    }
+
+    .pose-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--cp-border);
+    }
+
+    .pose-values {
+      color: var(--cp-text-muted);
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: 11px;
+      line-height: 1.7;
+      overflow-wrap: anywhere;
+    }
+
+    .log {
+      display: grid;
+      gap: 8px;
+      max-height: 146px;
+      overflow: auto;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .log li {
+      display: grid;
+      grid-template-columns: 62px 1fr;
+      gap: 10px;
+      color: var(--cp-text-muted);
+      font-size: 11px;
+    }
+
+    .log time {
+      color: var(--cp-text-soft);
+      font-family: Consolas, "Courier New", Courier, monospace;
+    }
+
+    .endpoint-note {
+      margin: 12px 0 0;
+      padding-top: 12px;
+      border-top: 1px solid var(--cp-border);
+      color: var(--cp-text-muted);
+      font-size: 11px;
+    }
+
+    code {
+      color: var(--cp-accent);
+      font-family: Consolas, "Courier New", Courier, monospace;
+      font-size: 0.95em;
+    }
+
+    .footer {
+      margin-top: 22px;
+      color: var(--cp-text-muted);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        width: min(100% - 28px, 560px);
+        padding-top: 20px;
+      }
+
+      .intro {
+        padding-top: 32px;
+      }
+
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .right-column {
+        grid-row: 1;
+      }
+
+      .arm-stage,
+      .arm-stage svg {
+        min-height: 285px;
+        height: 285px;
+      }
+
+      .joint-key {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 430px) {
+      .brand-caption {
+        max-width: 180px;
+      }
+
+      .status {
+        padding: 7px 9px;
+        font-size: 10px;
+      }
+
+      .card-body {
+        padding: 16px;
+      }
+
+      .pose-summary {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    .shell { width: min(1120px, calc(100% - 40px)); padding-top: 20px; }
+    .topbar { padding-bottom: 20px; border-bottom: 1px solid var(--cp-border); margin-bottom: 20px; }
+    .brand-name { font-size: 19px; letter-spacing: 0; }
+    .brand-caption { font-size: 12px; }
+    .main-grid { grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.65fr); gap: 28px; }
+    .right-column { grid-column: 1; grid-row: 1; }
+    .main-grid > .stack:first-child { grid-column: 2; grid-row: 1; }
+    .card { border: 0; border-radius: 0; background: var(--cp-bg); box-shadow: none; }
+    .card-body { padding: 0 0 20px; border-bottom: 1px solid var(--cp-border); }
+    .stack { gap: 20px; min-width: 0; }
+    .grid-picker { max-width: none; gap: 8px; }
+    .box-button { min-height: 82px; border-radius: 2px; font-size: 20px; }
+    .box-button.is-saved::after { top: 12px; right: 12px; }
+    .pickup-button { width: 100%; min-height: 42px; margin-top: 10px; font-size: 13px; }
+    .selection-note { text-align: left; }
+    .button { border-radius: 3px; min-height: 34px; padding: 6px 10px; }
+    .button-stop { background: var(--cp-danger); border-color: var(--cp-danger); color: var(--cp-bg); }
+    .actions { margin-top: 12px; }
+    .joint-list { gap: 0; }
+    .joint-control { padding: 14px 0; border-bottom: 1px solid var(--cp-border); gap: 8px; }
+    .motor-row { display: grid; grid-template-columns: 68px minmax(0, 1fr) 42px 30px 30px; gap: 8px; align-items: center; }
+    .motor-row .button { padding: 2px; min-height: 28px; }
+    .motor-test { justify-self: start; margin-left: 76px; font-size: 12px; font-weight: 400; }
+    .angle-value { min-width: 0; }
+    .pose-summary { border: 0; margin-top: 16px; padding: 0; }
+    .diagram-panel { order: 2; }
+    .diagram-panel summary { cursor: pointer; font-size: 15px; font-weight: 700; padding: 12px 0; }
+    .diagram-panel .small-note { margin-bottom: 12px; }
+    .table-scroll { overflow-x: auto; margin: 12px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; white-space: nowrap; }
+    th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid var(--cp-border); }
+    th:first-child, td:first-child { text-align: left; }
+    textarea { width: 100%; min-height: 180px; margin-top: 10px; padding: 10px; border: 1px solid var(--cp-border); background: var(--cp-surface); color: var(--cp-text); font: 11px/1.6 Consolas, "Courier New", Courier, monospace; resize: vertical; }
+    .device-note { color: var(--cp-text-muted); font-size: 12px; margin: 10px 0; }
+    .motion-status { min-height: 20px; }
+    @media (max-width: 760px) {
+      .shell { width: calc(100% - 28px); }
+      .main-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+      .right-column, .main-grid > .stack:first-child { grid-column: 1; grid-row: auto; }
+      .right-column { order: -1; }
+      .motor-row { grid-template-columns: 57px minmax(0, 1fr) 35px 27px 27px; gap: 5px; }
+      .motor-test { margin-left: 62px; }
+      .brand-mark { display: none; }
+      .status { max-width: 140px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M5 20h14M8 20v-3l3-2 2-5 4-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="13" cy="10" r="2" stroke="currentColor" stroke-width="2"/>
+            <circle cx="17" cy="8" r="1.5" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </div>
+        <div>
+          <p class="brand-name">Arm Pose Controller</p>
+          <p class="brand-caption">Device-layout preview · browser-only simulation</p>
+        </div>
+      </div>
+      <div id="status" class="status" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="statusText">Motors idle</span>
+      </div>
+    </header>
+
+    <aside class="demo-banner" aria-label="Simulation notice">
+      <span class="demo-icon" aria-hidden="true">i</span>
+      <div>
+        <strong>Simulation only — no hardware connection</strong>
+        <p>Layout and controls follow your screenshot, using this preview's theme. No requests reach a device. Saved poses disappear on reload. Real-device operation requires a clear work area and supervised motion.</p>
+      </div>
+    </aside>
+
+    <div class="main-grid">
+      <div class="stack">
+        <details class="card diagram-panel">
+          <summary>Show optional arm illustration</summary>
+          <div class="card-body">
+            <div class="card-heading">
+              <div>
+                <h2 id="armTitle">Arm overview</h2>
+                <p class="small-note">Illustrative joint roles only; the screenshot identifies motors by number, not physical function.</p>
+              </div>
+              <span class="badge">6 joints</span>
+            </div>
+            <div class="arm-stage">
+              <svg viewBox="0 0 520 320" role="img" aria-labelledby="armSvgTitle armSvgDesc">
+                <title id="armSvgTitle">Robot arm pose illustration</title>
+                <desc id="armSvgDesc">A labeled side-view schematic. Six numbered rotary joints connect the base, shoulder, elbow, wrist, and gripper. The pose changes when the angle controls change.</desc>
+                <path class="arm-ground" d="M75 286H445"/>
+                <g id="armCompass" aria-label="Top view indicator for base rotation">
+                  <text x="79" y="171" fill="var(--cp-text-muted)" font-size="10" font-weight="700">M0 BASE ROTATION</text>
+                  <circle cx="112" cy="214" r="31" fill="var(--cp-surface)" stroke="var(--cp-border-strong)" stroke-width="2"/>
+                  <circle cx="112" cy="214" r="22" fill="none" stroke="var(--cp-border)" stroke-dasharray="3 4"/>
+                  <path d="M112 181v7m0 52v7m33-33h-7m-52 0h-7" stroke="var(--cp-border-strong)" stroke-width="2"/>
+                  <line id="basePointer" x1="112" y1="214" x2="112" y2="192" stroke="var(--cp-accent)" stroke-width="4" stroke-linecap="round"/>
+                  <circle id="basePointerTip" cx="112" cy="192" r="4" fill="var(--cp-accent)"/>
+                  <circle cx="112" cy="214" r="4" fill="var(--cp-text-muted)"/>
+                  <text x="96" y="258" fill="var(--cp-text-muted)" font-size="9">TOP VIEW</text>
+                </g>
+                <path class="arm-base" d="M224 266h72l17 20H207z"/>
+                <path class="arm-base" d="M216 283h88v9h-88z"/>
+                <path class="arm-base-detail" d="M235 248h50v19h-50z"/>
+                <path class="arm-base" d="M242 238h36v12h-36z"/>
+                <path id="link1" class="arm-link" d="M260 244L260 179"/>
+                <path id="link1Highlight" class="arm-link-highlight" d="M260 244L260 179"/>
+                <path id="link2" class="arm-link" d="M260 179L260 117"/>
+                <path id="link2Highlight" class="arm-link-highlight" d="M260 179L260 117"/>
+                <path id="link3" class="arm-link" d="M260 117L260 71"/>
+                <path id="link3Highlight" class="arm-link-highlight" d="M260 117L260 71"/>
+                <path id="link4" class="arm-link" d="M260 71L260 37"/>
+                <path id="link4Highlight" class="arm-link-highlight" d="M260 71L260 37"/>
+                <path id="link5" class="arm-link" d="M260 37L260 22"/>
+                <path id="link5Highlight" class="arm-link-highlight" d="M260 37L260 22"/>
+                <path id="gripperUpper" class="arm-gripper" d="M260 22l22-12"/>
+                <path id="gripperLower" class="arm-gripper" d="M260 22l22 12"/>
+                <g id="joint0" transform="translate(260 244)">
+                  <circle class="joint" r="16"/>
+                  <circle class="joint-cap" r="9"/>
+                  <circle class="joint-bolt" r="3"/>
+                </g>
+                <g id="joint1" transform="translate(260 179)">
+                  <circle class="joint" r="17"/>
+                  <circle class="joint-cap" r="10"/>
+                  <circle class="joint-bolt" r="3"/>
+                </g>
+                <g id="joint2" transform="translate(260 117)">
+                  <circle class="joint" r="16"/>
+                  <circle class="joint-cap" r="9"/>
+                  <circle class="joint-bolt" r="3"/>
+                </g>
+                <g id="joint3" transform="translate(260 71)">
+                  <circle class="joint" r="14"/>
+                  <circle class="joint-cap" r="8"/>
+                  <circle class="joint-bolt" r="3"/>
+                </g>
+                <g id="joint4" transform="translate(260 37)">
+                  <circle class="joint" r="12"/>
+                  <circle class="joint-cap" r="7"/>
+                  <circle class="joint-bolt" r="3"/>
+                  <path id="rollMark" d="M-5 0h10" stroke="var(--cp-surface)" stroke-width="2" stroke-linecap="round"/>
+                </g>
+                <g id="joint5" transform="translate(260 22)">
+                  <circle class="joint" r="10"/>
+                  <circle class="joint-cap" r="5"/>
+                  <circle class="joint-bolt" r="2"/>
+                </g>
+              </svg>
+            </div>
+            <div id="jointKey" class="joint-key" aria-label="Diagram joint legend"></div>
+            <p class="stage-caption">Simplified side view, not to scale · angles illustrate movement, not calibrated robot geometry</p>
+          </div>
+        </details>
+
+        <section class="card" aria-labelledby="jointsTitle">
+          <div class="card-body">
+            <div class="card-heading">
+              <div>
+                <h2 id="jointsTitle">Motor angles <small>(0 = D0 ... 5 = D5)</small></h2>
+                <p class="small-note">Release a slider to send its angle. Tests sweep one motor to 0°, then 180°, then back to its starting angle. Tests here are accelerated simulations. Angles are commands, not measured position feedback.</p>
+              </div>
+              <span class="badge">degrees</span>
+            </div>
+            <p id="motionStatus" class="device-note motion-status" role="status">Idle. Arm the simulated servos to enable controls.</p>
+            <div id="jointList" class="joint-list"></div>
+            <div class="pose-summary">
+              <button id="saveButton" class="button button-primary" type="button" disabled>Save this target pose</button>
+            </div>
+            <p id="poseValues" class="device-note"></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="stack right-column">
+        <section class="card" aria-labelledby="gridTitle">
+          <div class="card-body">
+            <div class="card-heading">
+              <div>
+                <h2 id="gridTitle">Mapping target</h2>
+              </div>
+            </div>
+            <div id="gridPicker" class="grid-picker" role="group" aria-label="Choose a pose position"></div>
+            <button id="pickupButton" class="box-button pickup-button" type="button" aria-pressed="false">Pickup (outside board)</button>
+            <p id="selectionNote" class="selection-note">Selected: cell 1</p>
+            <p class="device-note">Select a target, adjust the motors, then save. Selection does not move the arm. Pickup is separate from the resting/home pose; it does not automatically grip or place pieces.</p>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="servoTitle">
+          <div class="card-body">
+            <h2 id="servoTitle">Servo control</h2>
+            <div class="actions">
+              <button id="armButton" class="button button-primary" type="button">Arm servos</button>
+              <button id="stopButton" class="button button-stop" type="button">Stop motion</button>
+            </div>
+            <p id="armHint" class="device-note">Not armed.</p>
+            <p class="device-note">Arming sets each simulated motor to 90°. Stop motion cancels a simulated test; it does not disarm the servos. On real hardware, stopping commands is not the same as cutting servo power.</p>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="savedTitle">
+          <div class="card-body">
+            <h2 id="savedTitle">Saved poses</h2>
+            <div class="table-scroll" tabindex="0" role="region" aria-label="Saved motor angles; scroll horizontally for all columns">
+              <table>
+                <thead><tr><th scope="col">Target</th><th scope="col">M0</th><th scope="col">M1</th><th scope="col">M2</th><th scope="col">M3</th><th scope="col">M4</th><th scope="col">M5</th></tr></thead>
+                <tbody id="savedRows"></tbody>
+              </table>
+            </div>
+            <button id="copyButton" class="button" type="button">Copy C++ table</button>
+            <p id="copyStatus" class="small-note" role="status"></p>
+            <label for="cppExport" class="small-note">Example C++ export (-1 means unsaved; not a valid servo command)</label>
+            <textarea id="cppExport" readonly spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="activityTitle">
+          <div class="card-body">
+            <div class="card-heading">
+              <div>
+                <h2 id="activityTitle">Activity</h2>
+                <p class="small-note">Actions in this browser session</p>
+              </div>
+              <span class="badge">demo</span>
+            </div>
+            <ol id="activityLog" class="log" aria-live="polite"></ol>
+            <p class="endpoint-note"><code>/api/state</code> returns the current arm and saved-pose state to the device web page.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <footer class="footer">Standalone interface preview · ESP32 hardware and Wi‑Fi are not required</footer>
+  </main>
+
+  <script>
+    (() => {
+      const initialAngles = [180, 90, 90, 135, 180, 90];
+      const jointNames = ["Base rotation", "Shoulder", "Elbow", "Wrist pitch", "Wrist roll", "Gripper"];
+      const angles = [...initialAngles];
+      const savedPoses = Array(10).fill(null);
+      let selectedBox = 0;
+      let armed = false;
+      let testTimer = null;
+      let testingMotor = null;
+      const jointKey = document.getElementById("jointKey");
+
+      const jointList = document.getElementById("jointList");
+      const gridPicker = document.getElementById("gridPicker");
+      const status = document.getElementById("status");
+      const statusText = document.getElementById("statusText");
+      const armButton = document.getElementById("armButton");
+      const armHint = document.getElementById("armHint");
+      const saveButton = document.getElementById("saveButton");
+      const poseValues = document.getElementById("poseValues");
+      const selectionNote = document.getElementById("selectionNote");
+      const activityLog = document.getElementById("activityLog");
+      const armSvg = document.querySelector(".arm-stage svg");
+      const pickupButton = document.getElementById("pickupButton");
+      const motionStatus = document.getElementById("motionStatus");
+      const savedRows = document.getElementById("savedRows");
+      const cppExport = document.getElementById("cppExport");
+      const copyStatus = document.getElementById("copyStatus");
+      const targetName = (index) => index === 9 ? "Pickup (outside board)" : `cell ${index + 1}`;
+
+      const updateArmView = () => {
+        const compact = window.matchMedia("(max-width: 430px)").matches;
+        armSvg.setAttribute("viewBox", compact ? "70 0 380 320" : "0 0 520 320");
+      };
+
+      const log = (message) => {
+        const item = document.createElement("li");
+        const time = document.createElement("time");
+        const detail = document.createElement("span");
+        time.dateTime = new Date().toISOString();
+        time.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        detail.textContent = message;
+        item.append(time, detail);
+        activityLog.prepend(item);
+        while (activityLog.children.length > 5) activityLog.lastElementChild.remove();
+      };
+
+      const updatePose = () => {
+        poseValues.textContent = angles.map((angle, index) => `M${index} ${angle}°`).join("  ·  ");
+        angles.forEach((angle, index) => {
+          document.getElementById(`jointKeyAngle${index}`).textContent = `${angle}°`;
+          document.getElementById(`jointRange${index}`).value = angle;
+          document.getElementById(`jointValue${index}`).value = `${angle}°`;
+        });
+        document.querySelectorAll(".box-button").forEach((button, index) => {
+          button.classList.toggle("is-saved", savedPoses[index] !== null);
+          button.setAttribute("aria-label", `${targetName(index)}${savedPoses[index] ? ", saved" : ", not saved"}`);
+          button.setAttribute("aria-pressed", String(index === selectedBox));
+        });
+        const hasSavedPose = savedPoses[selectedBox] !== null;
+        selectionNote.textContent = `Selected: ${targetName(selectedBox)} · ${hasSavedPose ? "saved" : "not saved"}`;
+        saveButton.disabled = !armed || testTimer !== null;
+        jointList.querySelectorAll("input, button").forEach((control) => {
+          control.disabled = !armed || testTimer !== null;
+        });
+        updateArmDrawing();
+      };
+
+      const updateSavedPoses = () => {
+        savedRows.replaceChildren();
+        savedPoses.forEach((pose, index) => {
+          const row = document.createElement("tr");
+          const label = document.createElement("th");
+          label.scope = "row";
+          label.textContent = targetName(index);
+          row.append(label);
+          for (let motor = 0; motor < 6; motor++) {
+            const cell = document.createElement("td");
+            cell.textContent = pose ? String(pose[motor]) : "—";
+            row.append(cell);
+          }
+          savedRows.append(row);
+        });
+        const formatPose = (pose) => `{${(pose || Array(6).fill(-1)).join(", ")}}`;
+        cppExport.value = [
+          "// Preview data only. -1 indicates an unsaved pose; do not command it.",
+          "const int cellAngles[9][6] = {",
+          ...savedPoses.slice(0, 9).map((pose, index) => `  ${formatPose(pose)}${index < 8 ? "," : ""} // cell ${index + 1}`),
+          "};", "",
+          "// Outside-board pickup; keep the resting/home pose separate.",
+          `const int pickupAngles[6] = ${formatPose(savedPoses[9])};`
+        ].join("\n");
+        copyStatus.textContent = "";
+      };
+
+      const updateArmDrawing = () => {
+        const points = [[260, 244]];
+        const lengths = [65, 62, 46, 34, 15];
+        const shoulderDirection = -135 + angles[1] * 0.5;
+        const elbowDirection = shoulderDirection + 35 + (angles[2] - 90) * 0.45;
+        const wristDirection = elbowDirection - 20 + (angles[3] - 135) * 0.35;
+        const directions = [
+          shoulderDirection * Math.PI / 180,
+          elbowDirection * Math.PI / 180,
+          wristDirection * Math.PI / 180
+        ];
+        directions.push(directions[2], directions[2]);
+
+        for (let index = 0; index < lengths.length; index++) {
+          const direction = directions[Math.min(index, directions.length - 1)];
+          const previous = points[index];
+          points.push([
+            previous[0] + Math.cos(direction) * lengths[index],
+            previous[1] + Math.sin(direction) * lengths[index]
+          ]);
+        }
+
+        points.forEach(([x, y], index) => {
+          document.getElementById(`joint${index}`).setAttribute("transform", `translate(${x} ${y})`);
+        });
+
+        for (let index = 0; index < lengths.length; index++) {
+          const [startX, startY] = points[index];
+          const [endX, endY] = points[index + 1];
+          const path = `M${startX} ${startY}L${endX} ${endY}`;
+          document.getElementById(`link${index + 1}`).setAttribute("d", path);
+          document.getElementById(`link${index + 1}Highlight`).setAttribute("d", path);
+        }
+
+        const baseAngle = (angles[0] - 180) * Math.PI / 180 - Math.PI / 2;
+        const pointerX = 112 + Math.cos(baseAngle) * 22;
+        const pointerY = 214 + Math.sin(baseAngle) * 22;
+        document.getElementById("basePointer").setAttribute("x2", pointerX);
+        document.getElementById("basePointer").setAttribute("y2", pointerY);
+        document.getElementById("basePointerTip").setAttribute("cx", pointerX);
+        document.getElementById("basePointerTip").setAttribute("cy", pointerY);
+        document.getElementById("rollMark").setAttribute("transform", `rotate(${angles[4]})`);
+
+        const [tipX, tipY] = points[5];
+        const toolDirection = directions[4];
+        const forwardX = Math.cos(toolDirection) * 7;
+        const forwardY = Math.sin(toolDirection) * 7;
+        const jawOpening = 4 + angles[5] * 0.12;
+        const sideX = Math.cos(toolDirection + Math.PI / 2) * jawOpening;
+        const sideY = Math.sin(toolDirection + Math.PI / 2) * jawOpening;
+        document.getElementById("gripperUpper").setAttribute(
+          "d",
+          `M${tipX} ${tipY}l${forwardX} ${forwardY}l${sideX} ${sideY}`
+        );
+        document.getElementById("gripperLower").setAttribute(
+          "d",
+          `M${tipX} ${tipY}l${forwardX} ${forwardY}l${-sideX} ${-sideY}`
+        );
+      };
+
+      jointNames.forEach((name, index) => {
+        const item = document.createElement("div");
+        item.className = "joint-key-item";
+        const number = document.createElement("span");
+        number.className = "joint-key-number";
+        number.textContent = `M${index}`;
+        const text = document.createElement("span");
+        text.className = "joint-key-text";
+        const label = document.createElement("span");
+        label.className = "joint-key-name";
+        label.textContent = name;
+        const value = document.createElement("span");
+        value.className = "joint-key-angle";
+        value.id = `jointKeyAngle${index}`;
+        text.append(label, value);
+        item.append(number, text);
+        jointKey.append(item);
+      });
+
+      jointNames.forEach((name, index) => {
+        const control = document.createElement("div");
+        control.className = "joint-control";
+        control.innerHTML = `
+          <div class="motor-row">
+            <label class="joint-name" for="jointRange${index}">Motor ${index}</label>
+            <input id="jointRange${index}" type="range" min="0" max="180" value="${angles[index]}" aria-label="Motor ${index} angle" disabled>
+            <output class="angle-value" id="jointValue${index}" for="jointRange${index}">${angles[index]}°</output>
+            <button type="button" class="button" data-step="-1" aria-label="Decrease motor ${index} angle" disabled>−</button>
+            <button type="button" class="button" data-step="1" aria-label="Increase motor ${index} angle" disabled>+</button>
+          </div>
+          <button type="button" class="button motor-test" disabled>Test motor ${index}: 0–180°</button>`;
+        jointList.append(control);
+        control.querySelector("input").addEventListener("change", (event) => {
+          if (!armed || testTimer !== null) return;
+          angles[index] = Number(event.target.value);
+          updatePose();
+          motionStatus.textContent = "Command complete (commanded position; no position feedback).";
+          log(`Motor ${index} commanded to ${angles[index]}° (simulated)`);
+        });
+        control.querySelectorAll("[data-step]").forEach((button) => {
+          button.addEventListener("click", () => {
+            if (!armed || testTimer !== null) return;
+            angles[index] = Math.max(0, Math.min(180, angles[index] + Number(button.dataset.step)));
+            updatePose();
+            motionStatus.textContent = "Command complete (simulated; no position feedback).";
+          });
+        });
+        control.querySelector(".motor-test").addEventListener("click", () => startTest(index));
+      });
+
+      const startTest = (motor) => {
+        if (!armed || testTimer !== null) return;
+        const targets = [0, 180, angles[motor]];
+        let stage = 0;
+        testingMotor = motor;
+        motionStatus.textContent = `Testing motor ${motor}: 0° → 180° → starting angle (accelerated simulation).`;
+        log(`Started simulated test for motor ${motor}`);
+        testTimer = setInterval(() => {
+          const difference = targets[stage] - angles[motor];
+          angles[motor] += Math.sign(difference) * Math.min(6, Math.abs(difference));
+          if (angles[motor] === targets[stage]) stage++;
+          if (stage === targets.length) {
+            clearInterval(testTimer);
+            testTimer = null;
+            testingMotor = null;
+            motionStatus.textContent = `Motor ${motor} test complete; returned to its starting angle.`;
+            log(`Motor ${motor} test completed (simulated)`);
+          }
+          updatePose();
+        }, 30);
+        updatePose();
+      };
+
+      for (let box = 0; box < 9; box++) {
+        const button = document.createElement("button");
+        button.className = "box-button";
+        button.type = "button";
+        button.textContent = String(box + 1);
+        button.setAttribute("aria-pressed", String(box === selectedBox));
+        button.addEventListener("click", () => {
+          selectedBox = box;
+          updatePose();
+          log(`Selected ${targetName(box)}; angles unchanged`);
+        });
+        gridPicker.append(button);
+      }
+
+      pickupButton.addEventListener("click", () => {
+        selectedBox = 9;
+        updatePose();
+        log("Selected outside-board pickup; angles unchanged");
+      });
+
+      armButton.addEventListener("click", () => {
+        if (armed) return;
+        armed = true;
+        angles.fill(90);
+        status.classList.add("is-armed");
+        statusText.textContent = "Armed · simulated";
+        armButton.textContent = "Servos armed";
+        armButton.disabled = true;
+        armHint.textContent = "Armed. All simulated motors commanded to 90°.";
+        motionStatus.textContent = "Command complete (simulated; no position feedback).";
+        log("Simulated servos armed at 90°");
+        updatePose();
+      });
+
+      document.getElementById("stopButton").addEventListener("click", () => {
+        const stoppedMotor = testingMotor;
+        clearInterval(testTimer);
+        testTimer = null;
+        testingMotor = null;
+        motionStatus.textContent = "Simulation stopped. Current angles held; servos remain " + (armed ? "armed." : "idle.");
+        log(stoppedMotor === null ? "Stop requested (simulated)" : `Stopped simulated motor ${stoppedMotor} test`);
+        updatePose();
+      });
+
+      saveButton.addEventListener("click", () => {
+        if (!armed || testTimer !== null) return;
+        savedPoses[selectedBox] = [...angles];
+        updatePose();
+        updateSavedPoses();
+        log(`Saved ${targetName(selectedBox)} (simulated)`);
+      });
+
+      document.getElementById("copyButton").addEventListener("click", async () => {
+        try {
+          if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+          await navigator.clipboard.writeText(cppExport.value);
+          copyStatus.textContent = "C++ table copied.";
+        } catch (error) {
+          console.warn("Could not copy the C++ table:", error);
+          cppExport.focus();
+          cppExport.select();
+          copyStatus.textContent = "Clipboard access failed. The export is selected; copy it manually.";
+        }
+      });
+
+      log("Controller ready; motors idle at the example starting angles");
+      updateArmView();
+      window.addEventListener("resize", updateArmView);
+      updateSavedPoses();
+      updatePose();
+      updateArmDrawing();
+    })();
+  </script>
+</body>
+</html>
