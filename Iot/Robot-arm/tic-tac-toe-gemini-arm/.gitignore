@@ -1,0 +1,6 @@
+# Real credentials. Copy the *.example.h files in include/ and fill them in.
+include/wifi_secrets.h
+include/gemini_config.h
+
+# PlatformIO build tree
+.pio/
